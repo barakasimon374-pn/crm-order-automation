@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+*.pyc
+
+uploaded_excel/
+
+*.xlsx
+customer_name_rotation.txt
+
+.env
+.env.*
+
+CRM Posting Report - *.xlsx
+
+test_brave_payment_working_backup.py
+test_brave_payment_working (1).py
+Pasted_code_updated.py
+
+test_brave.py
+test_asian_browser_safe.py
+test_asian_terminal.py
+test_asian_terminal_first_sheet.py
+test_pb326_browser_safe.py
+test_pb828_browser_safe.py
