@@ -1,32 +1,31 @@
 from collections import Counter
+import os
+import sys
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 import time
 import traceback
-import sys
-import os
-# Prevent Windows console encoding errors for Unicode CRM text.
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(
-        encoding="utf-8",
-        errors="backslashreplace"
-    )
-
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(
-        encoding="utf-8",
-        errors="backslashreplace"
-    )
 import re
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
-from openpyxl import load_workbook, Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
+try:
+    sys.stdout.reconfigure(
+        encoding="utf-8",
+        errors="replace"
+    )
+    sys.stderr.reconfigure(
+        encoding="utf-8",
+        errors="replace"
+    )
+except Exception:
+    pass
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
-CRM_URL = os.environ.get("CRM_URL", "").strip()
+CRM_URL = "https://smdp4cust.twyfordtile.net/#/wel/index"
 
 BRAVE_PATH = (
     r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
@@ -65,20 +64,307 @@ CUSTOMER_NAME_STATE_FILE = (
     Path(__file__).resolve().parent
     / "customer_name_rotation.txt"
 )
+# ============================================================
+# CRM POSTING REPORT
+# ============================================================
+
 POSTING_REPORT_ROWS = []
 
-CURRENT_REPORT_CONTEXT = {
-    "customer_name": "",
-    "document_no": "",
-    "excel_item_no": "",
-    "excel_description": "",
-    "excel_quantity": 0,
-}
+INVENTORY_RESERVATIONS = {}
+
+def write_posting_report():
+    if not POSTING_REPORT_ROWS:
+        print()
+        print("No posting report rows were collected.")
+        return None
+
+    downloads = Path.home() / "Downloads"
+    downloads.mkdir(parents=True, exist_ok=True)
+
+    report_time = time.strftime(
+        "%Y-%m-%d_%H%M%S"
+    )
+
+    report_path = (
+        downloads
+        / f"CRM Posting Report - {report_time}.xlsx"
+    )
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Posting Report"
+
+    headers = [
+        "Customer",
+        "Document No.",
+        "Excel Item No.",
+        "Excel Description",
+        "Excel Qty",
+        "CRM Item No.",
+        "CRM Product",
+        "CRM Inventory",
+        "Allocated Qty",
+        "Inventory Status",
+    ]
+
+    header_fill = PatternFill(
+        fill_type="solid",
+        fgColor="1F4E78"
+    )
+
+    header_font = Font(
+        color="FFFFFF",
+        bold=True
+    )
+
+    yellow_fill = PatternFill(
+        fill_type="solid",
+        fgColor="FFF2CC"
+    )
+
+    bright_yellow_fill = PatternFill(
+        fill_type="solid",
+        fgColor="FFFF00"
+    )
+
+    red_font = Font(
+        color="C00000"
+    )
+
+    thin_border = Border(
+        left=Side(style="thin", color="D9E1F2"),
+        right=Side(style="thin", color="D9E1F2"),
+        top=Side(style="thin", color="D9E1F2"),
+        bottom=Side(style="thin", color="D9E1F2"),
+    )
+
+    worksheet.append(headers)
+
+    for cell in worksheet[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(
+            horizontal="center",
+            vertical="center",
+            wrap_text=True
+        )
+        cell.border = thin_border
+
+    for row in POSTING_REPORT_ROWS:
+
+        worksheet.append([
+            row.get("customer_no", ""),
+            row.get("document_no", ""),
+            row.get("excel_item_no", ""),
+            row.get("excel_description", ""),
+            row.get("excel_qty", ""),
+            row.get("crm_item_no", ""),
+            row.get("crm_product", ""),
+            row.get("crm_inventory", ""),
+            row.get("allocated_qty", ""),
+            row.get("inventory_status", ""),
+        ])
+
+        row_number = worksheet.max_row
+        status = row.get(
+            "inventory_status",
+            ""
+        )
+
+        if status in {
+            "ZERO INVENTORY",
+            "INSUFFICIENT INVENTORY",
+        }:
+            worksheet.cell(
+                row=row_number,
+                column=4
+            ).font = red_font
+
+        if status in {
+            "ENOUGH INVENTORY",
+            "INSUFFICIENT INVENTORY",
+        }:
+
+            for column in (
+                5, 8, 9, 10
+            ):
+                worksheet.cell(
+                    row=row_number,
+                    column=column
+                ).fill = yellow_fill
+
+        if status == "ENOUGH INVENTORY":
+
+            worksheet.cell(
+                row=row_number,
+                column=4
+            ).fill = bright_yellow_fill
+
+            worksheet.cell(
+                row=row_number,
+                column=4
+            ).font = Font(
+                color="000000"
+            )
+
+    for row in worksheet.iter_rows():
+
+        for cell in row:
+            cell.border = thin_border
+            cell.alignment = Alignment(
+                vertical="top",
+                wrap_text=True
+            )
+
+    worksheet.row_dimensions[1].height = 32
+
+    worksheet.freeze_panes = "A2"
+    worksheet.auto_filter.ref = worksheet.dimensions
+
+    for column_cells in worksheet.columns:
+        max_length = 0
+        column_letter = column_cells[0].column_letter
+
+        for cell in column_cells:
+            value = "" if cell.value is None else str(cell.value)
+
+            if len(value) > max_length:
+                max_length = len(value)
+
+        worksheet.column_dimensions[
+            column_letter
+        ].width = min(max_length + 2, 40)
+    # --------------------------------------------------------
+    # ITEMS UNDER MONITORING
+    # --------------------------------------------------------
+
+    monitor_fill = PatternFill(
+        fill_type="solid",
+        fgColor="9DC3E6"
+    )
+
+    monitor_start_row = worksheet.max_row + 2
+
+    worksheet.merge_cells(
+        start_row=monitor_start_row,
+        start_column=1,
+        end_row=monitor_start_row,
+        end_column=4
+    )
+
+    monitor_title = worksheet.cell(
+        row=monitor_start_row,
+        column=1
+    )
+
+    monitor_title.value = "Items Under Monitoring"
+    monitor_title.font = Font(
+        bold=True,
+        color="FFFFFF"
+    )
+    monitor_title.fill = header_fill
+    monitor_title.alignment = Alignment(
+        horizontal="center",
+        vertical="center"
+    )
+    monitor_title.border = thin_border
+
+    monitor_headers = [
+        "Item Code",
+        "Status",
+        "Action",
+        "Note",
+    ]
+
+    for column, header in enumerate(
+        monitor_headers,
+        start=1
+    ):
+        cell = worksheet.cell(
+            row=monitor_start_row + 1,
+            column=column
+        )
+        cell.value = header
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(
+            horizontal="center",
+            vertical="center",
+            wrap_text=True
+        )
+        cell.border = thin_border
+
+    for offset, item_code in enumerate(
+        sorted(IGNORED_ITEM_CODES),
+        start=monitor_start_row + 2
+    ):
+        monitor_values = [
+            item_code,
+            "UNDER MONITORING",
+            "NOT POSTED",
+            "Excluded from CRM posting run",
+        ]
+
+        for column, value in enumerate(
+            monitor_values,
+            start=1
+        ):
+            cell = worksheet.cell(
+                row=offset,
+                column=column
+            )
+            cell.value = value
+            cell.fill = monitor_fill
+            cell.border = thin_border
+            cell.alignment = Alignment(
+                vertical="top",
+                wrap_text=True
+            )
+    workbook.save(
+        report_path
+    )
+
+    print()
+    print("=" * 70)
+    print("CRM POSTING REPORT CREATED")
+    print("=" * 70)
+    print(f"Report: {report_path}")
+    print(f"Rows: {len(POSTING_REPORT_ROWS)}")
+
+    return report_path
+
+def get_next_customer_name():
+    try:
+        index = int(
+            CUSTOMER_NAME_STATE_FILE.read_text(
+                encoding="utf-8"
+            ).strip()
+        )
+    except (FileNotFoundError, ValueError):
+        index = 0
+
+    customer_name = CUSTOMER_NAME_SEQUENCE[
+        index % len(CUSTOMER_NAME_SEQUENCE)
+    ]
+
+    CUSTOMER_NAME_STATE_FILE.write_text(
+        str(index + 1),
+        encoding="utf-8"
+    )
+
+    return customer_name
+
 
 
 WAREHOUSE_NAME = "SUAM STORES"
+CRM_EXCEL_FILE = os.environ.get(
+    "CRM_EXCEL_FILE"
+)
+
 EXCEL_FILE = (
-    Path(r"C:\Users\user\Downloads\Posted Sales Invoice Lines - 2026-09-26T080646.843.xlsx")
+    Path(CRM_EXCEL_FILE)
+    if CRM_EXCEL_FILE
+    else None
 )
 
 EXCEL_PREVIEW_ONLY = False
@@ -180,7 +466,7 @@ def load_excel_orders(excel_path):
         data_only=True
     )
 
-    worksheet = workbook["Posted Sales Invoice Lines"]
+    worksheet = workbook.active
 
     rows = worksheet.iter_rows(
         values_only=True
@@ -447,31 +733,19 @@ def load_excel_orders(excel_path):
                 f"{customer_no}"
             )
 
-        orders[
-    document_no
-]["lines"].append({
-
-    "document_no": document_no,
-
-    "customer_no": customer_no,
-
-    "item_no": item_no,
-
-    "description": description,
-
-    "quantity": quantity_value,
-
-    "unit_price_excel": unit_price_value,
-
-    "amount_excel": amount_value,
-
-    "unit_of_measure": unit_of_measure,
-
-    "location_code": normalize_excel_value(
-        row["Location Code"]
-    ),
-
-})
+        orders[document_no]["lines"].append({
+            "document_no": document_no,
+            "customer_no": customer_no,
+            "item_no": item_no,
+            "description": description,
+            "quantity": quantity_value,
+            "unit_price_excel": unit_price_value,
+            "amount_excel": amount_value,
+            "unit_of_measure": unit_of_measure,
+            "location_code": normalize_excel_value(
+                row["Location Code"]
+            ),
+        })
 
     workbook.close()
 
@@ -503,6 +777,8 @@ def load_excel_orders(excel_path):
     )
 
     return orders
+
+
 def audit_excel_pricing_codes(excel_path):
 
     print()
@@ -736,360 +1012,7 @@ def wait_for_enter(message):
         "Press ENTER when you are finished inspecting the CRM page..."
     )
 
-def get_next_customer_name():
-    try:
-        index = int(
-            CUSTOMER_NAME_STATE_FILE.read_text(
-                encoding="utf-8"
-            ).strip()
-        )
-    except (FileNotFoundError, ValueError):
-        index = 0
 
-    customer_name = CUSTOMER_NAME_SEQUENCE[
-        index % len(CUSTOMER_NAME_SEQUENCE)
-    ]
-
-    CUSTOMER_NAME_STATE_FILE.write_text(
-        str(index + 1),
-        encoding="utf-8"
-    )
-
-    return customer_name
-def record_inventory_report(
-    inventory_lines,
-    required_quantity
-):
-    total_inventory = sum(
-        float(line.get("inventory", 0))
-        for line in inventory_lines
-    )
-
-    required_quantity = float(
-        required_quantity
-    )
-
-    overall_shortage = (
-        total_inventory < required_quantity
-    )
-
-    for line in inventory_lines:
-
-        inventory = float(
-            line.get("inventory", 0)
-        )
-
-        posted_quantity = float(
-            line.get("allocated_quantity", 0)
-        )
-
-        # Do not report positive-inventory lines that
-        # were merely excess CRM search results and deleted.
-        if (
-            inventory > 0
-            and posted_quantity <= 0
-        ):
-            continue
-
-        if inventory <= 0:
-            status = "ZERO INVENTORY"
-
-        elif overall_shortage:
-            status = "INSUFFICIENT INVENTORY"
-
-        else:
-            status = "ENOUGH INVENTORY"
-
-        POSTING_REPORT_ROWS.append(
-            {
-                "Customer": CURRENT_REPORT_CONTEXT[
-                    "customer_name"
-                ],
-                "Document No.": CURRENT_REPORT_CONTEXT[
-                    "document_no"
-                ],
-                "Excel Item No.": CURRENT_REPORT_CONTEXT[
-                    "excel_item_no"
-                ],
-                "Excel Description": CURRENT_REPORT_CONTEXT[
-                    "excel_description"
-                ],
-                "Excel Qty": required_quantity,
-                "CRM Item No.": line.get(
-                    "item_no",
-                    ""
-                ),
-                "CRM Product": line.get(
-                    "product_title",
-                    ""
-                ),
-                "CRM Inventory": inventory,
-                "Posted Qty": posted_quantity,
-                "Inventory Status": status,
-            }
-        )
-def write_posting_report():
-
-    if not POSTING_REPORT_ROWS:
-        print()
-        print(
-            "No inventory results were collected. "
-            "Posting report was not created."
-        )
-        return None
-
-    report_time = time.strftime(
-        "%Y-%m-%d_%H%M%S"
-    )
-
-    report_path = (
-        Path.home()
-        / "Downloads"
-        / f"CRM Posting Report - {report_time}.xlsx"
-    )
-
-    workbook = Workbook()
-
-    worksheet = workbook.active
-    worksheet.title = "Posting Report"
-
-    headers = [
-        "Customer",
-        "Document No.",
-        "Excel Item No.",
-        "Excel Description",
-        "Excel Qty",
-        "CRM Item No.",
-        "CRM Product",
-        "CRM Inventory",
-        "Posted Qty",
-        "Inventory Status",
-    ]
-
-    yellow_fill = PatternFill(
-        fill_type="solid",
-        fgColor="FFF2CC"
-    )
-    bright_yellow_fill = PatternFill(
-    fill_type="solid",
-    fgColor="FFFF00"
-)
-
-    monitor_fill = PatternFill(
-        fill_type="solid",
-        fgColor="9DC3E6"
-    )
-    red_font = Font(
-        color="C00000"
-    )
-
-    header_fill = PatternFill(
-        fill_type="solid",
-        fgColor="1F4E78"
-    )
-
-    header_font = Font(
-        color="FFFFFF",
-        bold=True
-    )
-
-    thin_border = Border(
-        left=Side(style="thin", color="D9E1F2"),
-        right=Side(style="thin", color="D9E1F2"),
-        top=Side(style="thin", color="D9E1F2"),
-        bottom=Side(style="thin", color="D9E1F2"),
-    )
-
-    worksheet.append(headers)
-
-    for cell in worksheet[1]:
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(
-            horizontal="center",
-            vertical="center",
-            wrap_text=True
-        )
-        cell.border = thin_border
-
-    for row_data in POSTING_REPORT_ROWS:
-
-        worksheet.append(
-            [
-                row_data[header]
-                for header in headers
-            ]
-        )
-
-        row_number = worksheet.max_row
-
-        status = row_data[
-            "Inventory Status"
-        ]
-
-        # Zero or insufficient inventory:
-        # product description is red.
-        if status in {
-            "ZERO INVENTORY",
-            "INSUFFICIENT INVENTORY",
-        }:
-            worksheet.cell(
-                row=row_number,
-                column=4
-            ).font = red_font
-
-        # Enough or insufficient inventory:
-        # quantity/inventory/status cells are yellow.
-        if status in {
-            "ENOUGH INVENTORY",
-            "INSUFFICIENT INVENTORY",
-        }:
-            for column in (
-                5, 8, 9, 10
-            ):
-                worksheet.cell(
-                    row=row_number,
-                    column=column
-                ).fill = yellow_fill
-
-        # Enough inventory:
-        # Excel Description cell is bright yellow.
-        if status == "ENOUGH INVENTORY":
-            worksheet.cell(
-                row=row_number,
-                column=4
-            ).fill = bright_yellow_fill
-
-    for row in worksheet.iter_rows():
-
-        for cell in row:
-            cell.border = thin_border
-            cell.alignment = Alignment(
-                vertical="top",
-                wrap_text=True
-            )
-
-    worksheet.freeze_panes = "A2"
-
-    worksheet.auto_filter.ref = (
-        worksheet.dimensions
-    )
-
-    widths = {
-        "A": 16,
-        "B": 16,
-        "C": 16,
-        "D": 42,
-        "E": 12,
-        "F": 16,
-        "G": 44,
-        "H": 16,
-        "I": 14,
-        "J": 24,
-    }
-
-    for column, width in widths.items():
-        worksheet.column_dimensions[
-            column
-        ].width = width
-        # ----------------------------------------------------
-        # ITEMS UNDER MONITORING
-        # ----------------------------------------------------
-        monitor_start_row = worksheet.max_row + 2
-
-        worksheet.merge_cells(
-            start_row=monitor_start_row,
-            start_column=1,
-            end_row=monitor_start_row,
-            end_column=4
-        )
-
-        monitor_title = worksheet.cell(
-            row=monitor_start_row,
-            column=1
-        )
-
-        monitor_title.value = "Items Under Monitoring"
-        monitor_title.font = Font(
-            bold=True,
-            color="FFFFFF"
-        )
-        monitor_title.fill = header_fill
-        monitor_title.alignment = Alignment(
-            horizontal="center",
-            vertical="center"
-        )
-
-        monitor_headers = [
-            "Item Code",
-            "Status",
-            "Action",
-            "Note",
-        ]
-
-        for column, header in enumerate(
-            monitor_headers,
-            start=1
-        ):
-            cell = worksheet.cell(
-                row=monitor_start_row + 1,
-                column=column
-            )
-            cell.value = header
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.alignment = Alignment(
-                horizontal="center",
-                vertical="center",
-                wrap_text=True
-            )
-            cell.border = thin_border
-
-        monitor_notes = (
-            "Excluded from CRM posting run"
-        )
-
-        for offset, item_code in enumerate(
-            sorted(IGNORED_ITEM_CODES),
-            start=monitor_start_row + 2
-        ):
-            monitor_values = [
-                item_code,
-                "UNDER MONITORING",
-                "NOT POSTED",
-                monitor_notes,
-            ]
-
-            for column, value in enumerate(
-                monitor_values,
-                start=1
-            ):
-                cell = worksheet.cell(
-                    row=offset,
-                    column=column
-                )
-                cell.value = value
-                cell.fill = monitor_fill
-                cell.border = thin_border
-                cell.alignment = Alignment(
-                    vertical="top",
-                    wrap_text=True
-                )
-    worksheet.row_dimensions[1].height = 32
-
-    workbook.save(
-        report_path
-    )
-
-    print()
-    print("=" * 70)
-    print("CRM POSTING REPORT CREATED")
-    print("=" * 70)
-    print(
-        f"Report: {report_path}"
-    )
-
-    return report_path
 def visible_count(locator):
     count = locator.count()
     visible = 0
@@ -1198,7 +1121,7 @@ def find_order_row(page, product_title):
                     print(
                         "POSSIBLE ORDER LINE MATCH:"
                     )
-                    print(ascii(row_text))
+                    print(row_text)
 
                     return row
 
@@ -2021,7 +1944,96 @@ def search_product(page, search_text):
 
     search_button.click(force=True)
 
-    page.wait_for_timeout(3000)
+    print(
+        "Search submitted. Waiting for CRM search results..."
+    )
+
+    result_rows = page.locator(
+    "tr:visible"
+)
+
+    before_signature = "\n".join(
+        " ".join(text.split())
+        for text in result_rows.all_inner_texts()
+    )
+
+    print(
+        "Search submitted. Waiting for CRM results "
+        "table to refresh..."
+    )
+
+    results_ready = False
+    previous_signature = None
+    stable_checks = 0
+
+    for attempt in range(30):
+
+        try:
+
+            current_rows = page.locator(
+                "tr:visible"
+            )
+
+            current_texts = current_rows.all_inner_texts()
+
+            current_signature = "\n".join(
+                " ".join(text.split())
+                for text in current_texts
+            )
+
+            visible_result_checkboxes = page.locator(
+                "tr:visible .el-checkbox__inner"
+            )
+
+            checkbox_count = visible_count(
+                visible_result_checkboxes
+            )
+
+            # Require the table contents to change from the
+            # pre-search state and then remain stable.
+            if (
+                current_signature
+                and current_signature != before_signature
+                and checkbox_count > 0
+            ):
+
+                if current_signature == previous_signature:
+
+                    stable_checks += 1
+
+                else:
+
+                    stable_checks = 1
+
+                previous_signature = current_signature
+
+                if stable_checks >= 2:
+
+                    results_ready = True
+
+                    print(
+                        f"CRM search results ready after "
+                        f"{attempt + 1} check(s)."
+                    )
+
+                    break
+
+            else:
+
+                previous_signature = None
+                stable_checks = 0
+
+        except Exception:
+            pass
+
+        page.wait_for_timeout(500)
+
+    if not results_ready:
+
+        raise Exception(
+            f"CRM search results did not finish refreshing "
+            f"for '{search_text}' within 15 seconds."
+        )
 
     print(
         f"Search completed for: {search_text}"
@@ -2049,15 +2061,15 @@ def extract_embedded_crm_code(text):
     text = str(text).upper()
 
     match = re.search(
-    r"\b[A-Z]{2}-\d{2,5}[A-Z]{0,2}\b",
-    text
-)
+        r"\b[A-Z]{2}-\d{2,5}[A-Z]*\b",
+        text
+    )
 
     if match:
         return match.group(0)
 
     return ""
-def select_all_product_results(page):
+def select_all_product_results(page, search_text):
 
     print()
     print("=" * 60)
@@ -2094,7 +2106,10 @@ def select_all_product_results(page):
                 ".el-checkbox__inner"
             ).first
 
-            if visible_checkbox.count() == 0:
+            if (
+                visible_checkbox.count() == 0
+                and checkbox_input.count() == 0
+            ):
                 continue
 
             # ------------------------------------------------
@@ -2124,14 +2139,30 @@ def select_all_product_results(page):
             row_text = " ".join(
                 row.inner_text().split()
             ).strip()
-
-            # Skip the CRM table header row.
             if (
                 "THE TITLE OF THE PRODUCT" in row_text.upper()
                 and "STANDARD PACKING UNITS" in row_text.upper()
             ):
                 continue
+            normalized_search = "".join(
+                ch for ch in str(search_text).upper()
+                if ch.isalnum()
+            )
 
+            normalized_row = "".join(
+                ch for ch in row_text.upper()
+                if ch.isalnum()
+            )
+
+            # ------------------------------------------------
+            # REQUIRE THE CRM RESULT TO MATCH THE SEARCH TERM
+            # ------------------------------------------------
+
+            if (
+                normalized_search
+                and normalized_search not in normalized_row
+            ):
+                continue
             if not product_title:
 
                 product_title = row_text
@@ -2150,7 +2181,7 @@ def select_all_product_results(page):
             )
 
             print(
-                f"  Row: {ascii(row_text)}"
+                f"  Row: {row_text}"
             )
 
             # ------------------------------------------------
@@ -2174,7 +2205,7 @@ def select_all_product_results(page):
 
             except Exception:
 
-             already_checked = False
+                already_checked = False
 
             print(
                 f"  Already selected: "
@@ -2183,32 +2214,58 @@ def select_all_product_results(page):
 
             if not already_checked:
 
-                visible_checkbox.scroll_into_view_if_needed()
+                if visible_checkbox.count() > 0:
 
-                visible_checkbox.click(
-                    force=True
-                )
+                    visible_checkbox.scroll_into_view_if_needed()
 
-                page.wait_for_timeout(200)
+                    visible_checkbox.click(
+                        force=True
+                    )
 
-            try:
+                elif checkbox_input.count() > 0:
 
-                if checkbox_input.count() > 0:
-                    final_state = checkbox_input.is_checked()
+                    checkbox_input.evaluate(
+                        "(el) => el.click()"
+                    )
+
                 else:
-                    final_state = (
-                        "is-checked"
-                        in (
+
+                    raise Exception(
+                        "No usable checkbox was found for the CRM product row."
+                    )
+
+            page.wait_for_timeout(200)
+
+            final_state = False
+
+            for verification_attempt in range(10):
+
+                try:
+
+                    if visible_checkbox.count() > 0:
+
+                        parent_class = (
                             visible_checkbox
                             .locator("..")
                             .get_attribute("class")
                             or ""
                         )
-                    )
 
-            except Exception:
+                        if "is-checked" in parent_class:
+                            final_state = True
+                            break
 
-                final_state = False
+                    if (
+                        checkbox_input.count() > 0
+                        and checkbox_input.is_checked()
+                    ):
+                        final_state = True
+                        break
+
+                except Exception:
+                    pass
+
+                page.wait_for_timeout(200)
 
             if not final_state:
 
@@ -2674,7 +2731,7 @@ def find_order_rows_by_identity(
     ).upper()
 
     rows = page.locator(
-        "tr:visible"
+        "tr"
     )
 
     matches = []
@@ -2819,7 +2876,34 @@ def set_order_line_unit_price(
         str(unit_price)
     )
 
-    page.wait_for_timeout(300)
+    page.wait_for_timeout(500)
+
+    # CRM may re-render the row after the price changes.
+    # Re-find the row before verifying the entered value.
+    rows = find_order_rows_by_identity(
+        page,
+        item_no,
+        product_title
+    )
+
+    if occurrence >= len(rows):
+
+        raise Exception(
+            f"Could not re-find CRM line after "
+            f"setting unit price for:\n"
+            f"{item_no} | {product_title}"
+        )
+
+    row = rows[occurrence]
+
+    price_input = row.locator(
+        'input[placeholder="Please input unit price"]'
+    ).first
+
+    price_input.wait_for(
+        state="visible",
+        timeout=10000
+    )
 
     entered = price_input.input_value()
 
@@ -3043,11 +3127,27 @@ def allocate_quantity_across_new_lines(
 
         line_copy = dict(line)
 
-        line_copy["inventory"] = float(
-            inventory
+        inventory_key = str(
+            line["item_no"]
+        ).strip().upper()
+
+        already_reserved = INVENTORY_RESERVATIONS.get(
+            inventory_key,
+            0
         )
 
+        available_inventory = max(
+            0,
+            float(inventory) - float(already_reserved)
+        )
+
+        line_copy["inventory"] = available_inventory
+
         line_copy["allocated_quantity"] = 0
+
+        line_copy["unit_price"] = float(
+            unit_price
+        )
 
         inventory_lines.append(
             line_copy
@@ -3250,10 +3350,27 @@ def allocate_quantity_across_new_lines(
     )
     print("=" * 70)
 
-    record_inventory_report(
-        inventory_lines,
-        required_quantity
-    )
+    # --------------------------------------------------------
+    # RESERVE INVENTORY USED BY THIS EXCEL BATCH
+    # --------------------------------------------------------
+
+    for line in retained_lines:
+
+        inventory_key = str(
+            line["item_no"]
+        ).strip().upper()
+
+        allocated = float(
+            line.get("allocated_quantity", 0)
+        )
+
+        INVENTORY_RESERVATIONS[inventory_key] = (
+            INVENTORY_RESERVATIONS.get(
+                inventory_key,
+                0
+            )
+            + allocated
+        )
 
     return retained_lines
 def read_inventory_for_order_line(
@@ -4025,6 +4142,27 @@ def get_crm_search_text(line):
     description_upper = description.upper()
 
     # --------------------------------------------------------
+    # FRENCIA BASIN FAUCETS (BF-)
+    # --------------------------------------------------------
+    #
+    # CRM uses the BF- code with exactly 3 digits.
+    #
+    # Special BC exception:
+    # BF-22S in Excel -> BF-225 in CRM
+    # --------------------------------------------------------
+
+    if "BF-22S" in description_upper:
+        return "BF-225"
+
+    bf_match = re.search(
+        r"\bBF-(\d{3})(?:[A-Z])?\b",
+        f"{item_no} {description_upper}"
+    )
+
+    if bf_match:
+        return f"BF-{bf_match.group(1)}"
+
+    # --------------------------------------------------------
     # FRENCIA
     # --------------------------------------------------------
     #
@@ -4053,22 +4191,6 @@ def get_crm_search_text(line):
         return "SQ"
 
     # --------------------------------------------------------
-    # PB-326 / PB-207 / PB-828 PAIRED PRODUCTS
-    # --------------------------------------------------------
-
-    if (
-        "PB-326" in description_upper
-        or "PB-207" in description_upper
-        or "PB-828" in description_upper
-    ):
-        if "PB-326" in description_upper:
-            return "PB-326"
-
-        if "PB-207" in description_upper:
-            return "PB-207"
-
-        return "PB-828"
-    # --------------------------------------------------------
     # OTHER FRENCIA PRODUCTS
     # --------------------------------------------------------
 
@@ -4081,17 +4203,15 @@ def get_crm_search_text(line):
         if embedded_code:
 
             if embedded_code in {
-                "WC-004T",
-                "WC-004P",
                 "WC-006T",
                 "WC-006P",
                 "WC-008T",
                 "WC-008P",
                 "WC-009T",
                 "WC-009P",
-                "WC-029P",
-                "WC-100P",
-                "WC-100T",
+                "WC-664T",
+                "WC-664P",
+                "WC-664W",
             }:
 
                 return embedded_code[:-1]
@@ -4107,32 +4227,6 @@ def get_crm_search_text(line):
         )
 
     # --------------------------------------------------------
-    # MRP TILE CODES
-    # --------------------------------------------------------
-    # MRP products use 6 digits after "MRP".
-    # The MRP code may appear in the item number or
-    # inside the product description.
-    #
-    # Example:
-    # MRP612003Z -> CRM search = 612003
-    # MRP612002Y -> CRM search = 612002
-    # --------------------------------------------------------
-
-    mrp_code = re.search(
-        r"\bMRP(\d{6})(?:[A-Z])?\b",
-        description_upper
-    )
-
-    if not mrp_code:
-        mrp_code = re.search(
-            r"\bMRP(\d{6})(?:[A-Z])?\b",
-            item_no
-        )
-
-    if mrp_code:
-        return mrp_code.group(1)
-
-    # --------------------------------------------------------
     # FT / WT TILES
     # --------------------------------------------------------
 
@@ -4142,12 +4236,12 @@ def get_crm_search_text(line):
     ):
 
         tile_code = re.search(
-        r"\d{5}",
-        description
-    )
+            r"\d{5}",
+            description
+        )
 
         if tile_code:
-           return tile_code.group(0)
+            return tile_code.group(0)
 
     # --------------------------------------------------------
     # NORMAL PRODUCTS
@@ -4253,14 +4347,6 @@ def get_crm_price(
         "WC-001W": "PB-001W",
         "WC-001P": "PB-001P",
         "WC-001B": "PB-001B",
-        "WC-004P": "WC-004T",
-        "WC-004T": "WC-004P",
-        "PB-326P": "PB-326B",
-        "PB-326B": "PB-326P",
-        "PB-207P": "PB-207B",
-        "PB-207B": "PB-207P",
-        "PB-828P": "PB-828B",
-        "PB-828B": "PB-828P",
     }
 
     if item_no in matching_pairs:
@@ -4756,13 +4842,16 @@ def main():
             # SELL CUSTOMER
             # ------------------------------------------------
 
+            print()
+            print(
+                "Entering Sell customers name..."
+            )
             customer_name = get_next_customer_name()
 
             print(
                 f"Entering Sell customers name: "
                 f"{customer_name}"
             )
-
             sell_customer = order_page.locator(
                 'input[placeholder="Please input Sell customers"]'
             )
@@ -5025,15 +5114,7 @@ def main():
                 search_text = get_crm_search_text(
                     line
                 )
-                CURRENT_REPORT_CONTEXT.update(
-                {
-                    "customer_name": customer_name,
-                    "document_no": document_no,
-                    "excel_item_no": item_no,
-                    "excel_description": description,
-                    "excel_quantity": quantity,
-                }
-            )
+
                 print()
                 print("-" * 70)
                 print(
@@ -5092,7 +5173,8 @@ def main():
                 # ------------------------------------------------
 
                 selected_products = select_all_product_results(
-                    order_page
+                    order_page,
+                    search_text
                 )
 
                 print()
@@ -5157,7 +5239,6 @@ def main():
 
                 # ------------------------------------------------
                 # SPECIAL PAIRED TOILET PRODUCTS
-                # WC-004 = WC-004P + WC-004T
                 # WC-006 + SC-001
                 # WC-008 + SC-001
                 # WC-009 + SC-001
@@ -5179,8 +5260,13 @@ def main():
                     "WC-029",
                     "WC-100",
                     "WC-5096",
+                    "WC-664",
                 }
-
+                paired_models_with_sc = {
+                    "WC-006",
+                    "WC-008",
+                    "WC-009",
+                }
                 if paired_model == "SQ":
 
                     print()
@@ -5351,75 +5437,27 @@ def main():
                     # IDENTIFY P AND T COMPONENT LINES
                     # ------------------------------------------------
 
-                    if paired_model == "WC-029":
-
-                        paired_p_lines = [
-                            line_record
-                            for line_record in new_order_lines
-                            if "P-029P"
+                    paired_p_lines = [
+                        line_record
+                        for line_record in new_order_lines
+                        if (
+                            f"{paired_model}P"
                             in str(
                                 line_record["product_title"]
                             ).upper()
-                        ]
+                        )
+                    ]
 
-                    elif paired_model == "WC-5096":
-
-                        paired_p_lines = [
-                            line_record
-                            for line_record in new_order_lines
-                            if "WC-5096 P-TRAP CLOSE COUPLE BOX WHITE"
+                    paired_t_lines = [
+                        line_record
+                        for line_record in new_order_lines
+                        if (
+                            f"{paired_model}T"
                             in str(
                                 line_record["product_title"]
                             ).upper()
-                        ]
-
-                    else:
-
-                        paired_p_lines = [
-                            line_record
-                            for line_record in new_order_lines
-                            if (
-                                f"{paired_model}P"
-                                in str(
-                                    line_record["product_title"]
-                                ).upper()
-                            )
-                        ]
-
-                    if paired_model == "WC-029":
-
-                        paired_t_lines = [
-                            line_record
-                            for line_record in new_order_lines
-                            if "P-029/145T"
-                            in str(
-                                line_record["product_title"]
-                            ).upper()
-                        ]
-
-                    elif paired_model == "WC-5096":
-
-                        paired_t_lines = [
-                            line_record
-                            for line_record in new_order_lines
-                            if "WC-5096 TANK CLOSE COUPLE BOX WHITE"
-                            in str(
-                                line_record["product_title"]
-                            ).upper()
-                        ]
-
-                    else:
-
-                        paired_t_lines = [
-                            line_record
-                            for line_record in new_order_lines
-                            if (
-                                f"{paired_model}T"
-                                in str(
-                                    line_record["product_title"]
-                                ).upper()
-                            )
-                        ]
+                        )
+                    ]
 
                     print(
                         f"{paired_model}P CRM lines found: "
@@ -5444,30 +5482,28 @@ def main():
                             f"No {paired_model}T CRM lines "
                             "were created."
                         )
+                    if paired_model in paired_models_with_sc:
 
-                    # ------------------------------------------------
-                    # SC-001 IS REQUIRED ONLY FOR WC-006 / WC-008 / WC-009
-                    # WC-004 = WC-004P + WC-004T ONLY
-                    # ------------------------------------------------
+                        print()
+                        print(
+                            "=" * 70
+                        )
+                        print(
+                            "SPECIAL SC-001 COMPANION PROCESS"
+                        )
+                        print("=" * 70)
 
-                    sc_new_lines = []
-
-                    if paired_model not in {
-                        "WC-004",
-                        "WC-029",
-                        "WC-100",
-                        "WC-5096",
-                    }:
+                        # ------------------------------------------------
+                        # ADD SC-001 MANUALLY THROUGH CRM
+                        # ------------------------------------------------
 
                         print()
                         print(
                             "Adding required SC-001 companion..."
                         )
 
-                        before_sc_lines = (
-                            get_order_line_records(
-                                order_page
-                            )
+                        before_sc_lines = get_order_line_records(
+                            order_page
                         )
 
                         open_product_window(
@@ -5481,7 +5517,8 @@ def main():
 
                         selected_sc_products = (
                             select_all_product_results(
-                                order_page
+                                order_page,
+                                "SC-001"
                             )
                         )
 
@@ -5504,11 +5541,9 @@ def main():
                             )
                         )
 
-                        sc_new_lines = (
-                            get_new_order_lines(
-                                before_sc_lines,
-                                after_sc_lines
-                            )
+                        sc_new_lines = get_new_order_lines(
+                            before_sc_lines,
+                            after_sc_lines
                         )
 
                         print(
@@ -5526,29 +5561,42 @@ def main():
 
                     # ------------------------------------------------
                     # CALCULATE PAIRED COMPONENT PRICE
-                    # WC-004 = EXCEL PRICE / 2
-                    # WC-006 / WC-008 / WC-009 =
-                    # (EXCEL PRICE - 1000) / 2
                     # ------------------------------------------------
 
-                    paired_base_price = get_crm_price(
-                        line,
-                        current_order_lines
+                    unit_price_excel = float(
+                        line["unit_price_excel"]
                     )
+
+                    amount_excel = line.get(
+                        "amount_excel"
+                    )
+
+                    if (
+                        not unit_price_excel.is_integer()
+                        and amount_excel is not None
+                    ):
+
+                        paired_base_price = float(
+                            amount_excel
+                        )
+
+                    else:
+
+                        paired_base_price = (
+                            unit_price_excel
+                        )
 
                     if paired_model in {
                         "WC-004",
                         "WC-029",
                         "WC-100",
                         "WC-5096",
+                        "WC-664",
                     }:
-
                         paired_component_price = (
                             paired_base_price / 2
                         )
-
                     else:
-
                         paired_component_price = (
                             paired_base_price - 1000
                         ) / 2
@@ -5582,6 +5630,7 @@ def main():
                         "WC-029",
                         "WC-100",
                         "WC-5096",
+                        "WC-664",
                     }:
 
                         print(
@@ -5626,10 +5675,9 @@ def main():
 
                     # ------------------------------------------------
                     # ALLOCATE SC-001 COMPONENT
-                    # WC-004 does NOT use SC-001
                     # ------------------------------------------------
 
-                    if paired_model != "WC-004":
+                    if paired_model in paired_models_with_sc:
 
                         retained_sc_lines = (
                             allocate_quantity_across_new_lines(
@@ -5644,170 +5692,11 @@ def main():
                             retained_sc_lines
                         )
 
-                elif paired_model in {
-                    "PB-326",
-                    "PB-207",
-                    "PB-828",
-                }:
-
-                    print()
-                    print("=" * 70)
-                    print("SPECIAL PB PAIRED PROCESS")
-                    print("=" * 70)
-
-                    # ------------------------------------------------
-                    # IDENTIFY P AND B COMPONENT LINES
-                    # ------------------------------------------------
-
-                    normalized_model = (
-                        paired_model
-                        .replace("-", "")
-                        .strip()
-                        .upper()
-                    )
-
-                    paired_p_lines = [
-                        line_record
-                        for line_record in new_order_lines
-                        if (
-                            f"{normalized_model}P"
-                            in "".join(
-                                ch
-                                for ch in str(
-                                    line_record["product_title"]
-                                ).upper()
-                                if ch.isalnum()
-                            )
-                        )
-                    ]
-
-                    paired_b_lines = [
-                        line_record
-                        for line_record in new_order_lines
-                        if (
-                            f"{normalized_model}B"
-                            in "".join(
-                                ch
-                                for ch in str(
-                                    line_record["product_title"]
-                                ).upper()
-                                if ch.isalnum()
-                            )
-                        )
-                    ]
-
-                    if not paired_p_lines:
-                        raise Exception(
-                            f"Could not find "
-                            f"{paired_model}P CRM line."
-                        )
-
-                    if not paired_b_lines:
-                        raise Exception(
-                            f"Could not find "
-                            f"{paired_model}B CRM line."
-                        )
-
-                    # ------------------------------------------------
-                    # REMOVE ALL UNRELATED SEARCH RESULTS
-                    # ------------------------------------------------
-
-                    retained_pair_lines = (
-                        paired_p_lines
-                        + paired_b_lines
-                    )
-
-                    for line_record in new_order_lines:
-
-                        if line_record not in retained_pair_lines:
-
-                            delete_product_line(
-                                order_page,
-                                line_record["product_title"]
-                            )
-
-                    # ------------------------------------------------
-                    # PRICE
-                    # BC / EXCEL PRICE SPLIT BETWEEN P AND B
-                    # ------------------------------------------------
-
-                    paired_base_price = get_crm_price(
-                        line,
-                        current_order_lines
-                    )
-
-                    if paired_model == "WC-004":
-
-                        paired_component_price = (
-                            paired_base_price / 2
-                        )
-
-                    else:
-
-                        paired_component_price = (
-                            paired_base_price - 1000
-                        ) / 2
-
-                    if paired_component_price < 0:
-                        raise Exception(
-                            f"Invalid PB paired-product "
-                            f"price for {paired_model}: "
-                            f"{paired_component_price}"
-                        )
-
-                    print(
-                        f"Paired base price: "
-                        f"{paired_base_price}"
-                    )
-
-                    print(
-                        f"{paired_model}P price: "
-                        f"{paired_component_price}"
-                    )
-
-                    print(
-                        f"{paired_model}B price: "
-                        f"{paired_component_price}"
-                    )
-
-                    # ------------------------------------------------
-                    # ALLOCATE P COMPONENT
-                    # ------------------------------------------------
-
-                    retained_lines = []
-
-                    retained_p_lines = (
-                        allocate_quantity_across_new_lines(
-                            order_page,
-                            paired_p_lines,
-                            quantity,
-                            paired_component_price
-                        )
-                    )
-
-                    retained_lines.extend(
-                        retained_p_lines
-                    )
-
-                    # ------------------------------------------------
-                    # ALLOCATE B COMPONENT
-                    # ------------------------------------------------
-
-                    retained_b_lines = (
-                        allocate_quantity_across_new_lines(
-                            order_page,
-                            paired_b_lines,
-                            quantity,
-                            paired_component_price
-                        )
-                    )
-
-                    retained_lines.extend(
-                        retained_b_lines
-                    )
-
                 else:
+
+                    # ------------------------------------------------
                     # NORMAL PRODUCT ALLOCATION
+                    # ------------------------------------------------
 
                     crm_price = get_crm_price(
                         line,
@@ -5822,7 +5711,57 @@ def main():
                             crm_price
                         )
                     )
+                # ------------------------------------------------
+                # COLLECT POSTING REPORT ROWS
+                # ------------------------------------------------
 
+                customer_no = str(
+                    excel_orders[document_no].get(
+                        "customer_no",
+                        ""
+                    )
+                ).strip()
+
+                for retained_line in retained_lines:
+
+                    POSTING_REPORT_ROWS.append({
+                        "customer_no": customer_no,
+                        "document_no": document_no,
+                        "excel_item_no": item_no,
+                        "excel_description": description,
+                        "excel_qty": float(quantity),
+                        "excel_unit_price": float(
+                            line["unit_price_excel"]
+                        ),
+                        "crm_item_no": str(
+                            retained_line["item_no"]
+                        ).strip(),
+                        "crm_product": str(
+                            retained_line["product_title"]
+                        ).strip(),
+                        "crm_inventory": float(
+                            retained_line["inventory"]
+                        ),
+                        "allocated_qty": float(
+                            retained_line["allocated_quantity"]
+                        ),
+                        "crm_unit_price": float(
+                            retained_line["unit_price"]
+                        ),
+                        "inventory_status": (
+                            "ZERO INVENTORY"
+                            if float(
+                                retained_line["inventory"]
+                            ) <= 0
+                            else (
+                                "INSUFFICIENT INVENTORY"
+                                if float(
+                                    retained_line["allocated_quantity"]
+                                ) < float(quantity)
+                                else "ENOUGH INVENTORY"
+                            )
+                        ),
+                    })
                 print()
                 print(
                     f"Retained CRM lines for BC item: "
@@ -5896,7 +5835,6 @@ def main():
                         f"{inspection_error}"
                     )
 
-            
             # ------------------------------------------------
             # SUBMIT ORDER
             # ------------------------------------------------
@@ -5909,6 +5847,12 @@ def main():
             test_submit_order(
                 order_page
             )
+
+            # ------------------------------------------------
+            # CREATE POSTING REPORT AFTER SUCCESSFUL SUBMIT
+            # ------------------------------------------------
+
+            report_path = write_posting_report()
 
             print()
             print("=" * 70)
@@ -5925,13 +5869,7 @@ def main():
                 "Processed Excel item lines: "
                 f"{len(excel_lines)}"
             )
-            report_path = write_posting_report()
 
-            if report_path:
-                print(
-                    f"Posting report saved to: "
-                    f"{report_path}"
-                )
             print()
             print(
                 "CRM calculations were left to the CRM."
@@ -5975,6 +5913,8 @@ def main():
                 "ERROR STATE — INSPECT THE CRM PAGE "
                 "BEFORE CLOSING IT"
             )
+
+            raise
 
         finally:
 

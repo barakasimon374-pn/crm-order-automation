@@ -450,7 +450,7 @@ async function pollStatus() {
   } catch (_) {}
 }
 downloadReport.addEventListener('click', () => {
-  window.location.href = '/download-report';
+  window.location.href = `/download-report?t=${Date.now()}`;
 });
 setInterval(pollStatus, 1000);
 pollStatus();
