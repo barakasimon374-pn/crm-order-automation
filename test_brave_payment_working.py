@@ -70,7 +70,11 @@ CUSTOMER_NAME_STATE_FILE = (
 
 POSTING_REPORT_ROWS = []
 
+ZERO_INVENTORY_REPORT_LINES = []
+
 INVENTORY_RESERVATIONS = {}
+
+MONITORED_CRM_INVENTORY = {}
 
 def write_posting_report():
     if not POSTING_REPORT_ROWS:
@@ -250,7 +254,7 @@ def write_posting_report():
         start_row=monitor_start_row,
         start_column=1,
         end_row=monitor_start_row,
-        end_column=4
+        end_column=5
     )
 
     monitor_title = worksheet.cell(
@@ -275,6 +279,7 @@ def write_posting_report():
         "Status",
         "Action",
         "Note",
+        "CRM Inventory",
     ]
 
     for column, header in enumerate(
@@ -304,6 +309,10 @@ def write_posting_report():
             "UNDER MONITORING",
             "NOT POSTED",
             "Excluded from CRM posting run",
+            MONITORED_CRM_INVENTORY.get(
+                item_code,
+                ""
+            ),
         ]
 
         for column, value in enumerate(
@@ -2043,7 +2052,225 @@ def search_product(page, search_text):
         f"Search completed for: {search_text}"
     )
 
+def read_monitored_crm_inventory(
+    page,
+    item_code
+):
+    """
+    Read the current CRM dealer-warehouse inventory for a
+    monitored item without leaving the item in the CRM order.
+    """
 
+    target_item = str(item_code).strip()
+
+    print()
+    print("=" * 60)
+    print(
+        f"CHECKING CRM INVENTORY FOR MONITORED ITEM: "
+        f"{target_item}"
+    )
+    print("=" * 60)
+
+    before_order_lines = get_order_line_records(
+        page
+    )
+
+    open_product_window(
+        page
+    )
+
+    search_product(
+        page,
+        target_item
+    )
+
+    rows = page.locator(
+        "tr:visible"
+    )
+
+    target_row = None
+    product_title = ""
+
+    normalized_target = "".join(
+        ch
+        for ch in target_item.upper()
+        if ch.isalnum()
+    )
+
+    for i in range(rows.count()):
+
+        row = rows.nth(i)
+
+        try:
+
+            cells = row.locator("td")
+
+            checkbox_input = row.locator(
+                'input[type="checkbox"]'
+            ).first
+
+            visible_checkbox = row.locator(
+                ".el-checkbox__inner"
+            ).first
+
+            if (
+                visible_checkbox.count() == 0
+                and checkbox_input.count() == 0
+            ):
+                continue
+
+            row_item_no = ""
+
+            if cells.count() >= 1:
+
+                row_item_no = " ".join(
+                    cells.nth(0)
+                    .inner_text()
+                    .split()
+                ).strip()
+
+            normalized_row_item = "".join(
+                ch
+                for ch in row_item_no.upper()
+                if ch.isalnum()
+            )
+
+            if normalized_row_item != normalized_target:
+                continue
+
+            if cells.count() >= 2:
+
+                product_title = " ".join(
+                    cells.nth(1)
+                    .inner_text()
+                    .split()
+                ).strip()
+
+            if not product_title:
+
+                product_title = " ".join(
+                    row.inner_text().split()
+                ).strip()
+
+            target_row = row
+            break
+
+        except Exception:
+            continue
+
+    if target_row is None:
+
+        raise Exception(
+            f"CRM product result not found for "
+            f"monitored item {target_item}"
+        )
+
+    print()
+    print(
+        f"Monitored CRM item found: {target_item}"
+    )
+
+    print(
+        f"CRM Product: {product_title}"
+    )
+
+    checkbox_input = target_row.locator(
+        'input[type="checkbox"]'
+    ).first
+
+    visible_checkbox = target_row.locator(
+        ".el-checkbox__inner"
+    ).first
+
+    if checkbox_input.count() > 0:
+
+        checkbox_input.evaluate(
+            "(el) => el.click()"
+        )
+
+    elif visible_checkbox.count() > 0:
+
+        visible_checkbox.scroll_into_view_if_needed()
+
+        visible_checkbox.click(
+            force=True
+        )
+
+    else:
+
+        raise Exception(
+            f"No selectable checkbox found for "
+            f"monitored item {target_item}"
+        )
+
+    page.wait_for_timeout(300)
+
+    confirm_product_selection(
+        page
+    )
+
+    page.wait_for_timeout(1000)
+
+    after_order_lines = get_order_line_records(
+        page
+    )
+
+    new_order_lines = get_new_order_lines(
+        before_order_lines,
+        after_order_lines
+    )
+
+    matching_lines = [
+        line
+        for line in new_order_lines
+        if str(line["item_no"]).strip() == target_item
+        and str(line["product_title"]).strip() == product_title
+    ]
+
+    if not matching_lines:
+
+        raise Exception(
+            f"Monitored CRM line was not created for "
+            f"{target_item} | {product_title}"
+        )
+
+    try:
+
+        inventory = read_inventory_for_order_line(
+            page,
+            target_item,
+            product_title,
+            0
+        )
+
+        print()
+        print(
+            f"CRM inventory for monitored item "
+            f"{target_item}: {inventory}"
+        )
+
+    finally:
+
+        deleted = delete_product_line(
+            page,
+            product_title
+        )
+
+        if not deleted:
+
+            raise Exception(
+                f"Temporary monitored CRM line could not "
+                f"be deleted:\n"
+                f"{target_item} | {product_title}"
+            )
+
+    print()
+    print(
+        f"Monitored CRM item removed after inventory "
+        f"check: {target_item}"
+    )
+
+    return float(inventory)
 # ============================================================
 # PRODUCT SELECTION
 # ============================================================
@@ -3172,6 +3399,11 @@ def allocate_quantity_across_new_lines(
         for line in inventory_lines
         if line["inventory"] > 0
     ]
+
+    ZERO_INVENTORY_REPORT_LINES.extend(
+        dict(line)
+        for line in zero_lines
+    )
 
     print()
     print(
@@ -5084,7 +5316,40 @@ def main():
                     "Excel file was loaded, but no item lines "
                     "are available for CRM entry."
                 )
+            # ------------------------------------------------
+            # READ CRM INVENTORY FOR MONITORED ITEMS
+            # ------------------------------------------------
 
+            print()
+            print("=" * 70)
+            print("READING CRM INVENTORY FOR MONITORED ITEMS")
+            print("=" * 70)
+
+            for monitored_code in sorted(
+                IGNORED_ITEM_CODES
+            ):
+
+                try:
+
+                    MONITORED_CRM_INVENTORY[
+                        monitored_code
+                    ] = read_monitored_crm_inventory(
+                        order_page,
+                        monitored_code
+                    )
+
+                except Exception as monitor_error:
+
+                    print()
+                    print(
+                        f"Could not read CRM inventory for "
+                        f"monitored item {monitored_code}: "
+                        f"{monitor_error}"
+                    )
+
+                    MONITORED_CRM_INVENTORY[
+                        monitored_code
+                    ] = ""
             # ------------------------------------------------
             # ADD ALL EXCEL PRODUCTS TO CRM
             # ------------------------------------------------
@@ -5241,6 +5506,9 @@ def main():
                     document_no
                 ]["lines"]
 
+                zero_report_start = len(
+                    ZERO_INVENTORY_REPORT_LINES
+                )
                 # ------------------------------------------------
                 # SPECIAL PAIRED TOILET PRODUCTS
                 # WC-006 + SC-001
@@ -5767,6 +6035,36 @@ def main():
                             )
                         ),
                     })
+                for zero_line in ZERO_INVENTORY_REPORT_LINES[
+                    zero_report_start:
+                ]:
+
+                    POSTING_REPORT_ROWS.append({
+                        "posting_date": time.strftime("%Y-%m-%d"),
+                        "customer_no": customer_no,
+                        "document_no": document_no,
+                        "excel_item_no": item_no,
+                        "excel_description": description,
+                        "excel_qty": float(quantity),
+                        "excel_unit_price": float(
+                            line["unit_price_excel"]
+                        ),
+                        "crm_item_no": str(
+                            zero_line["item_no"]
+                        ).strip(),
+                        "crm_product": str(
+                            zero_line["product_title"]
+                        ).strip(),
+                        "crm_inventory": float(
+                            zero_line["inventory"]
+                        ),
+                        "allocated_qty": 0.0,
+                        "crm_unit_price": float(
+                            zero_line["unit_price"]
+                        ),
+                        "inventory_status": "ZERO INVENTORY",
+                    })
+
                 print()
                 print(
                     f"Retained CRM lines for BC item: "
