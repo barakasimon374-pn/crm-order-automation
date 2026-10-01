@@ -203,7 +203,7 @@ def write_posting_report():
 
             worksheet.cell(
                 row=row_number,
-                column=4
+                column=5
             ).font = Font(
                 color="000000"
             )
@@ -597,14 +597,17 @@ def load_excel_orders(excel_path):
             row["Sell-to Customer No."]
         )
 
-        item_no = normalize_excel_value(
-            row["No."]
-        )
+        item_no = normalize_excel_value(row["No."])
+        description = normalize_excel_value(row["Description"])
 
-        if item_no.upper() in IGNORED_ITEM_CODES:
+        if (
+            item_no.upper() in IGNORED_ITEM_CODES
+            or any(code in description.upper() for code in IGNORED_ITEM_CODES)
+        ):
             ignored_rows += 1
             print(
-                f"Ignoring monitored item code: {item_no}"
+                f"Ignoring monitored item code: {item_no} | "
+                f"Description: {description}"
             )
             continue
 
