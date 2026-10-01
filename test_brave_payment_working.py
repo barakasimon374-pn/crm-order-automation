@@ -84,7 +84,6 @@ def write_posting_report():
     report_time = time.strftime(
         "%Y-%m-%d_%H%M%S"
     )
-
     report_path = (
         downloads
         / f"CRM Posting Report - {report_time}.xlsx"
@@ -95,6 +94,7 @@ def write_posting_report():
     worksheet.title = "Posting Report"
 
     headers = [
+        "Date",
         "Customer",
         "Document No.",
         "Excel Item No.",
@@ -153,6 +153,7 @@ def write_posting_report():
     for row in POSTING_REPORT_ROWS:
 
         worksheet.append([
+            row.get("posting_date", ""),
             row.get("customer_no", ""),
             row.get("document_no", ""),
             row.get("excel_item_no", ""),
@@ -177,7 +178,7 @@ def write_posting_report():
         }:
             worksheet.cell(
                 row=row_number,
-                column=4
+                column=5
             ).font = red_font
 
         if status in {
@@ -186,7 +187,7 @@ def write_posting_report():
         }:
 
             for column in (
-                5, 8, 9, 10
+                6, 9, 10, 11
             ):
                 worksheet.cell(
                     row=row_number,
@@ -197,7 +198,7 @@ def write_posting_report():
 
             worksheet.cell(
                 row=row_number,
-                column=4
+                column=5
             ).fill = bright_yellow_fill
 
             worksheet.cell(
@@ -5725,6 +5726,7 @@ def main():
                 for retained_line in retained_lines:
 
                     POSTING_REPORT_ROWS.append({
+                        "posting_date": time.strftime("%Y-%m-%d"),
                         "customer_no": customer_no,
                         "document_no": document_no,
                         "excel_item_no": item_no,
