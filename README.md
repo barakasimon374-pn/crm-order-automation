@@ -24,7 +24,7 @@ The workflow includes:
 
 ## Main Files
 
-### `test_brave_payment_working.py`
+### `test_brave_payment_working_normal_items.py`
 
 The main automation engine.
 

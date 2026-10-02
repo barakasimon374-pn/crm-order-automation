@@ -13,13 +13,13 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-import test_brave_payment_working as automation
+import test_brave_payment_working_normal_items as automation
 
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploaded_excel"
 UPLOAD_DIR.mkdir(exist_ok=True)
-AUTOMATION_SCRIPT = BASE_DIR / "test_brave_payment_working.py"
+AUTOMATION_SCRIPT = BASE_DIR / "test_brave_payment_working_normal_items.py"
 
 app = FastAPI(title="CRM Excel Order Upload")
 
