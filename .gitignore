@@ -22,3 +22,11 @@ test_asian_terminal.py
 test_asian_terminal_first_sheet.py
 test_pb326_browser_safe.py
 test_pb828_browser_safe.py
+
+# SQLite database (generated at runtime)
+*.db
+*.db-wal
+*.db-shm
+
+# Log files
+*.log

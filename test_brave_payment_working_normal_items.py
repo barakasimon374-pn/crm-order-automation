@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+import db as _db
 
 print("### RUNNING NORMAL ITEMS VERSION ###")
 try:
@@ -2624,6 +2625,12 @@ def main():
             customer_name = get_next_customer_name()
             print(f"Entering Sell customers name: {customer_name}")
 
+            # Create a DB run record as soon as we have the customer name.
+            _db_run_id = _db.create_run(
+                excel_filename=str(EXCEL_FILE.name) if EXCEL_FILE else "",
+                customer_name=customer_name,
+            )
+
             sell_customer = order_page.locator(
                 'input[placeholder="Please input Sell customers"]'
             )
@@ -2736,6 +2743,9 @@ def main():
 
             if not excel_orders:
                 raise Exception("No usable Excel order data was found.")
+
+            # Persist Excel order lines to the database.
+            _db.save_excel_order_lines(_db_run_id, excel_orders)
 
             # Flatten all Excel order lines into one CRM batch.
             excel_lines = []
@@ -3211,6 +3221,17 @@ def main():
 
             report_path = write_posting_report()
 
+            # Save posting report rows to DB and mark run as successful.
+            _db.save_posting_report_rows(_db_run_id, POSTING_REPORT_ROWS)
+            _db.finish_run(
+                run_id=_db_run_id,
+                status="success",
+                total_documents=len(excel_orders),
+                total_lines=len(excel_lines),
+                report_path=str(report_path) if report_path else None,
+            )
+            print(f"Run #{_db_run_id} saved to database.")
+
             print()
             print("=" * 70)
             print("EXCEL-DRIVEN CRM ORDER COMPLETED")
@@ -3235,6 +3256,16 @@ def main():
             traceback.print_exc()
             print()
             print("The browser will remain open.")
+
+            # Mark the run as failed in the database.
+            try:
+                _db.finish_run(
+                    run_id=_db_run_id,
+                    status="error",
+                    error_message=f"{type(e).__name__}: {e}",
+                )
+            except Exception:
+                pass
 
             wait_for_enter(
                 "ERROR STATE - INSPECT THE CRM PAGE BEFORE CLOSING IT"

@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 import test_brave_payment_working_normal_items as automation
+import db as _db
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -259,6 +260,126 @@ def download_report():
         )
     )
 
+@app.get("/history")
+def history() -> JSONResponse:
+    """Return the most recent 100 runs."""
+    runs = _db.get_all_runs(limit=100)
+    return JSONResponse({"runs": runs})
+
+
+@app.get("/history/{run_id}")
+def run_detail(run_id: int) -> JSONResponse:
+    """Return full detail for a single run — metadata + posting rows + summary."""
+    run = _db.get_run(run_id)
+
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found.")
+
+    rows = _db.get_posting_report_rows(run_id)
+    summary = _db.get_posting_report_summary(run_id)
+    excel_lines = _db.get_excel_order_lines(run_id)
+
+    return JSONResponse({
+        "run": run,
+        "summary": summary,
+        "posting_rows": rows,
+        "excel_lines": excel_lines,
+    })
+
+
+@app.get("/history/{run_id}/export")
+def export_run_report(run_id: int):
+    """Download the Excel posting report file for a specific run."""
+    run = _db.get_run(run_id)
+
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found.")
+
+    report_path = run.get("report_path")
+
+    if not report_path or not Path(report_path).exists():
+        raise HTTPException(
+            status_code=404,
+            detail="No report file found for this run.",
+        )
+
+    return FileResponse(
+        path=report_path,
+        filename=Path(report_path).name,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+    )
+
+
+# ============================================================
+# ODATA ENDPOINTS — Power BI Web connector compatible
+# ============================================================
+# Power BI can consume these via:
+#   Home -> Get Data -> Web -> http://127.0.0.1:8000/odata/runs
+# Each endpoint returns { "value": [...] } which Power BI
+# recognises as an OData collection automatically.
+# ============================================================
+
+@app.get("/odata/runs")
+def odata_runs() -> JSONResponse:
+    """All automation runs — one row per CRM session."""
+    runs = _db.get_all_runs(limit=10000)
+    return JSONResponse({"@odata.context": "runs", "value": runs})
+
+
+@app.get("/odata/posting_rows")
+def odata_posting_rows(run_id: int | None = None) -> JSONResponse:
+    """
+    All posting report rows across every run.
+    Optional ?run_id=N filter to limit to a single run.
+    """
+    with _db.get_connection() as conn:
+        if run_id is not None:
+            rows = conn.execute(
+                "SELECT * FROM posting_report_rows WHERE run_id = ? ORDER BY id",
+                (run_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM posting_report_rows ORDER BY id"
+            ).fetchall()
+    return JSONResponse({"@odata.context": "posting_rows", "value": [dict(r) for r in rows]})
+
+
+@app.get("/odata/excel_lines")
+def odata_excel_lines(run_id: int | None = None) -> JSONResponse:
+    """
+    All Excel order lines across every run.
+    Optional ?run_id=N filter to limit to a single run.
+    """
+    with _db.get_connection() as conn:
+        if run_id is not None:
+            rows = conn.execute(
+                "SELECT * FROM excel_order_lines WHERE run_id = ? ORDER BY id",
+                (run_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM excel_order_lines ORDER BY id"
+            ).fetchall()
+    return JSONResponse({"@odata.context": "excel_lines", "value": [dict(r) for r in rows]})
+
+
+@app.get("/odata")
+def odata_service_document() -> JSONResponse:
+    """OData service document — lists available entity sets."""
+    base = "http://127.0.0.1:8000/odata"
+    return JSONResponse({
+        "@odata.context": f"{base}/$metadata",
+        "value": [
+            {"name": "runs",          "url": f"{base}/runs"},
+            {"name": "posting_rows",  "url": f"{base}/posting_rows"},
+            {"name": "excel_lines",   "url": f"{base}/excel_lines"},
+        ],
+    })
+
+
 PAGE_HTML = r"""
 <!doctype html>
 <html lang="en">
@@ -295,8 +416,18 @@ PAGE_HTML = r"""
   th { background: #f8f9fb; position: sticky; top: 0; }
   tr:last-child td { border-bottom: 0; }
   .pill { display: inline-block; padding: 5px 9px; border-radius: 999px; background: #edf2f8; font-size: 12px; }
+  .pill-success { background: #e8f5e9; color: #2e7d32; }
+  .pill-error   { background: #fce4ec; color: #c00000; }
+  .pill-warn    { background: #fff8e1; color: #f57f17; }
+  .pill-running { background: #e3f2fd; color: #1565c0; }
   .log { background: #10141c; color: #dce4f2; border-radius: 12px; padding: 16px; min-height: 240px; max-height: 420px; overflow: auto; font: 12px/1.55 Consolas, monospace; white-space: pre-wrap; }
   .hidden { display: none; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 4px; }
+  .tab { background: #e8edf5; border: 0; border-radius: 10px 10px 0 0; padding: 10px 22px; font-size: 14px; font-weight: 700; cursor: pointer; color: #4c5668; }
+  .tab-active { background: white; color: #172033; border: 1px solid #e1e7f0; border-bottom: 1px solid white; margin-bottom: -1px; }
+  .run-row { border: 1px solid #e3e7ee; border-radius: 12px; padding: 14px 16px; margin-bottom: 10px; cursor: pointer; transition: .12s; }
+  .run-row:hover { background: #f4f7fb; border-color: #b0bcce; }
+  #detailPanel { margin-top: 16px; }
   @media (max-width: 760px) { .stats { grid-template-columns: 1fr; } h1 { font-size: 28px; } }
 </style>
 </head>
@@ -307,6 +438,14 @@ PAGE_HTML = r"""
     <h1>Upload Excel Order File</h1>
     <p class="sub">Drop the Excel export here, validate the usable order lines, then start the existing CRM posting workflow.</p>
   </div>
+
+  <div class="tabs">
+    <button class="tab tab-active" id="uploadTab">Upload &amp; Post</button>
+    <button class="tab" id="historyTab">Run History</button>
+    <button class="tab" id="pbiTab">&#128200; Power BI</button>
+  </div>
+
+  <div id="uploadPanel">
 
   <div class="card">
     <label id="drop" class="drop" for="file">
@@ -343,6 +482,174 @@ PAGE_HTML = r"""
     <h2>CRM Automation Log</h2>
     <div id="log" class="log">Waiting for the CRM automation to start...</div>
   </div>
+</div>
+
+<div id="historyPanel" class="hidden">
+  <div class="card">
+    <h2>Run History</h2>
+    <div id="historyList"><p style="color:#6a7383">Click the History tab to load.</p></div>
+    <div id="detailPanel" class="hidden"></div>
+  </div>
+</div>
+
+<div id="pbiPanel" class="hidden">
+  <div class="card">
+    <h2>&#128200; Power BI Integration</h2>
+    <p style="color:#5b6577;margin-top:0">Connect Power BI Desktop directly to the live database using the endpoints below.</p>
+
+    <div class="stats" style="margin-bottom:0">
+      <div class="stat">
+        Runs
+        <b style="font-size:14px;word-break:break-all">
+          <a href="/odata/runs" target="_blank" style="color:#172033">/odata/runs</a>
+        </b>
+        <span style="font-size:12px;color:#6a7383">One row per automation session</span>
+      </div>
+      <div class="stat">
+        Posting Rows
+        <b style="font-size:14px;word-break:break-all">
+          <a href="/odata/posting_rows" target="_blank" style="color:#172033">/odata/posting_rows</a>
+        </b>
+        <span style="font-size:12px;color:#6a7383">Every CRM posting line with inventory status</span>
+      </div>
+      <div class="stat">
+        Excel Lines
+        <b style="font-size:14px;word-break:break-all">
+          <a href="/odata/excel_lines" target="_blank" style="color:#172033">/odata/excel_lines</a>
+        </b>
+        <span style="font-size:12px;color:#6a7383">Every Excel order line loaded per run</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">Quick Connect Steps</h3>
+    <ol style="color:#4c5668;line-height:2">
+      <li>Open <b>Power BI Desktop</b></li>
+      <li>Click <b>Home → Transform Data</b> to open Power Query Editor</li>
+      <li>Click <b>Home → New Source → Blank Query</b></li>
+      <li>Click <b>View → Advanced Editor</b></li>
+      <li>Paste one of the M queries below, click <b>Done</b></li>
+      <li>Rename the query in the left panel (<code>Runs</code>, <code>PostingRows</code>, <code>ExcelLines</code>)</li>
+      <li>Repeat for each table, then click <b>Close &amp; Apply</b></li>
+      <li>In <b>Model view</b> link <code>PostingRows[run_id]</code> → <code>Runs[id]</code> and <code>ExcelLines[run_id]</code> → <code>Runs[id]</code></li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">M Query — Runs</h3>
+    <div style="position:relative">
+      <button onclick="copyQuery('qRuns')" style="position:absolute;top:8px;right:8px;background:#172033;color:#fff;padding:6px 12px;font-size:12px;border-radius:6px">Copy</button>
+      <pre id="qRuns" class="log" style="min-height:auto;max-height:220px;margin:0;font-size:12px">let
+    Source     = Json.Document(Web.Contents("http://127.0.0.1:8000/odata/runs")),
+    Value      = Source[value],
+    ToTable    = Table.FromList(Value, Splitter.SplitByNothing(), null, null, ExtraValues.Error),
+    Expanded   = Table.ExpandRecordColumn(ToTable, "Column1",
+                     {"id","started_at","finished_at","excel_filename","status",
+                      "error_message","total_documents","total_lines",
+                      "report_path","customer_name","created_at"},
+                     {"id","started_at","finished_at","excel_filename","status",
+                      "error_message","total_documents","total_lines",
+                      "report_path","customer_name","created_at"}),
+    TypedTable = Table.TransformColumnTypes(Expanded,{
+                     {"id", Int64.Type}, {"started_at", type datetime},
+                     {"finished_at", type datetime}, {"excel_filename", type text},
+                     {"status", type text}, {"error_message", type text},
+                     {"total_documents", Int64.Type}, {"total_lines", Int64.Type},
+                     {"report_path", type text}, {"customer_name", type text},
+                     {"created_at", type datetime}})
+in TypedTable</pre>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">M Query — PostingRows</h3>
+    <div style="position:relative">
+      <button onclick="copyQuery('qPosting')" style="position:absolute;top:8px;right:8px;background:#172033;color:#fff;padding:6px 12px;font-size:12px;border-radius:6px">Copy</button>
+      <pre id="qPosting" class="log" style="min-height:auto;max-height:220px;margin:0;font-size:12px">let
+    Source     = Json.Document(Web.Contents("http://127.0.0.1:8000/odata/posting_rows")),
+    Value      = Source[value],
+    ToTable    = Table.FromList(Value, Splitter.SplitByNothing(), null, null, ExtraValues.Error),
+    Expanded   = Table.ExpandRecordColumn(ToTable, "Column1",
+                     {"id","run_id","posting_date","customer_no","document_no",
+                      "excel_item_no","excel_description","excel_qty","excel_unit_price",
+                      "crm_item_no","crm_product","crm_inventory","allocated_qty",
+                      "crm_unit_price","inventory_status"},
+                     {"id","run_id","posting_date","customer_no","document_no",
+                      "excel_item_no","excel_description","excel_qty","excel_unit_price",
+                      "crm_item_no","crm_product","crm_inventory","allocated_qty",
+                      "crm_unit_price","inventory_status"}),
+    TypedTable = Table.TransformColumnTypes(Expanded,{
+                     {"id", Int64.Type}, {"run_id", Int64.Type},
+                     {"posting_date", type date}, {"customer_no", type text},
+                     {"document_no", type text}, {"excel_item_no", type text},
+                     {"excel_description", type text}, {"excel_qty", type number},
+                     {"excel_unit_price", type number}, {"crm_item_no", type text},
+                     {"crm_product", type text}, {"crm_inventory", type number},
+                     {"allocated_qty", type number}, {"crm_unit_price", type number},
+                     {"inventory_status", type text}})
+in TypedTable</pre>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">M Query — ExcelLines</h3>
+    <div style="position:relative">
+      <button onclick="copyQuery('qExcel')" style="position:absolute;top:8px;right:8px;background:#172033;color:#fff;padding:6px 12px;font-size:12px;border-radius:6px">Copy</button>
+      <pre id="qExcel" class="log" style="min-height:auto;max-height:220px;margin:0;font-size:12px">let
+    Source     = Json.Document(Web.Contents("http://127.0.0.1:8000/odata/excel_lines")),
+    Value      = Source[value],
+    ToTable    = Table.FromList(Value, Splitter.SplitByNothing(), null, null, ExtraValues.Error),
+    Expanded   = Table.ExpandRecordColumn(ToTable, "Column1",
+                     {"id","run_id","document_no","customer_no","item_no",
+                      "description","quantity","unit_price","amount",
+                      "unit_of_measure","location_code","crm_search_text"},
+                     {"id","run_id","document_no","customer_no","item_no",
+                      "description","quantity","unit_price","amount",
+                      "unit_of_measure","location_code","crm_search_text"}),
+    TypedTable = Table.TransformColumnTypes(Expanded,{
+                     {"id", Int64.Type}, {"run_id", Int64.Type},
+                     {"document_no", type text}, {"customer_no", type text},
+                     {"item_no", type text}, {"description", type text},
+                     {"quantity", type number}, {"unit_price", type number},
+                     {"amount", type number}, {"unit_of_measure", type text},
+                     {"location_code", type text}, {"crm_search_text", type text}})
+in TypedTable</pre>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">Suggested DAX Measures</h3>
+    <div style="position:relative">
+      <button onclick="copyQuery('qDax')" style="position:absolute;top:8px;right:8px;background:#172033;color:#fff;padding:6px 12px;font-size:12px;border-radius:6px">Copy</button>
+      <pre id="qDax" class="log" style="min-height:auto;max-height:260px;margin:0;font-size:12px">-- Paste each measure into: Home -> New Measure (on PostingRows table)
+
+Total Lines = COUNTROWS(PostingRows)
+
+Enough Inventory =
+    CALCULATE(COUNTROWS(PostingRows),
+              PostingRows[inventory_status] = "ENOUGH INVENTORY")
+
+Insufficient Inventory =
+    CALCULATE(COUNTROWS(PostingRows),
+              PostingRows[inventory_status] = "INSUFFICIENT INVENTORY")
+
+Zero Inventory =
+    CALCULATE(COUNTROWS(PostingRows),
+              PostingRows[inventory_status] = "ZERO INVENTORY")
+
+Fulfilment Rate % =
+    DIVIDE([Enough Inventory], [Total Lines], 0) * 100
+
+Total Allocated Qty = SUM(PostingRows[allocated_qty])
+
+Total Excel Qty = SUM(PostingRows[excel_qty])
+
+Shortfall Qty = [Total Excel Qty] - [Total Allocated Qty]</pre>
+    </div>
+  </div>
+</div>
+
 </div>
 
 <script>
@@ -454,6 +761,149 @@ downloadReport.addEventListener('click', () => {
 });
 setInterval(pollStatus, 1000);
 pollStatus();
+
+// ============================================================
+// HISTORY TAB
+// ============================================================
+
+const historyTab   = document.getElementById('historyTab');
+const uploadTab    = document.getElementById('uploadTab');
+const pbiTab       = document.getElementById('pbiTab');
+const historyPanel = document.getElementById('historyPanel');
+const uploadPanel  = document.getElementById('uploadPanel');
+const pbiPanel     = document.getElementById('pbiPanel');
+const historyList  = document.getElementById('historyList');
+const detailPanel  = document.getElementById('detailPanel');
+
+pbiTab.addEventListener('click', () => {
+  pbiTab.classList.add('tab-active');
+  uploadTab.classList.remove('tab-active');
+  historyTab.classList.remove('tab-active');
+  pbiPanel.classList.remove('hidden');
+  uploadPanel.classList.add('hidden');
+  historyPanel.classList.add('hidden');
+});
+
+function copyQuery(id) {
+  const text = document.getElementById(id).innerText;
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.querySelector(`button[onclick="copyQuery('${id}')"]`);
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+  });
+}
+
+uploadTab.addEventListener('click', () => {
+  uploadTab.classList.add('tab-active');
+  historyTab.classList.remove('tab-active');
+  pbiTab.classList.remove('tab-active');
+  uploadPanel.classList.remove('hidden');
+  historyPanel.classList.add('hidden');
+  pbiPanel.classList.add('hidden');
+});
+
+historyTab.addEventListener('click', () => {
+  historyTab.classList.add('tab-active');
+  uploadTab.classList.remove('tab-active');
+  pbiTab.classList.remove('tab-active');
+  historyPanel.classList.remove('hidden');
+  uploadPanel.classList.add('hidden');
+  pbiPanel.classList.add('hidden');
+  loadHistory();
+});
+
+async function loadHistory() {
+  historyList.innerHTML = '<p style="color:#6a7383">Loading...</p>';
+  detailPanel.classList.add('hidden');
+  try {
+    const res  = await fetch('/history');
+    const data = await res.json();
+    if (!data.runs.length) {
+      historyList.innerHTML = '<p style="color:#6a7383">No runs recorded yet.</p>';
+      return;
+    }
+    historyList.innerHTML = data.runs.map(r => `
+      <div class="run-row" onclick="loadRunDetail(${r.id})">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span>
+            <b>Run #${r.id}</b>
+            <span class="pill pill-${r.status}">${r.status}</span>
+          </span>
+          <span style="font-size:12px;color:#6a7383">${r.started_at || ''}</span>
+        </div>
+        <div style="font-size:13px;margin-top:4px;color:#4c5668">
+          ${esc(r.excel_filename || '—')} &nbsp;|&nbsp;
+          ${r.total_documents ?? '?'} docs &nbsp;|&nbsp;
+          ${r.total_lines ?? '?'} lines &nbsp;|&nbsp;
+          Customer: ${esc(r.customer_name || '—')}
+        </div>
+        ${r.error_message ? `<div style="font-size:12px;color:#c00000;margin-top:2px">${esc(r.error_message)}</div>` : ''}
+      </div>`).join('');
+  } catch (err) {
+    historyList.innerHTML = `<p style="color:#c00000">Failed to load history: ${err.message}</p>`;
+  }
+}
+
+async function loadRunDetail(runId) {
+  detailPanel.classList.remove('hidden');
+  detailPanel.innerHTML = '<p style="color:#6a7383">Loading run detail...</p>';
+  try {
+    const res  = await fetch(`/history/${runId}`);
+    const data = await res.json();
+    const r    = data.run;
+    const s    = data.summary;
+    const rows = data.posting_rows;
+
+    detailPanel.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h3 style="margin:0">Run #${r.id} — ${esc(r.excel_filename || '—')}</h3>
+        ${r.report_path ? `<button onclick="window.location='/history/${r.id}/export'" style="background:#172033;color:#fff;border:0;border-radius:8px;padding:8px 14px;font-weight:700;cursor:pointer">Download Report</button>` : ''}
+      </div>
+      <div class="stats" style="margin-bottom:16px">
+        <div class="stat">Status<b><span class="pill pill-${r.status}">${r.status}</span></b></div>
+        <div class="stat">Started<b>${r.started_at || '—'}</b></div>
+        <div class="stat">Finished<b>${r.finished_at || '—'}</b></div>
+        <div class="stat">Documents<b>${r.total_documents ?? '—'}</b></div>
+        <div class="stat">Lines<b>${r.total_lines ?? '—'}</b></div>
+        <div class="stat">Customer<b>${esc(r.customer_name || '—')}</b></div>
+      </div>
+      <div class="stats" style="margin-bottom:16px">
+        <div class="stat" style="background:#e8f5e9">Enough Inventory<b style="color:#2e7d32">${s.enough ?? 0}</b></div>
+        <div class="stat" style="background:#fff8e1">Insufficient<b style="color:#f57f17">${s.insufficient ?? 0}</b></div>
+        <div class="stat" style="background:#fce4ec">Zero Inventory<b style="color:#c00000">${s.zero ?? 0}</b></div>
+      </div>
+      ${r.error_message ? `<div style="background:#fff0f0;border:1px solid #f5c6c6;border-radius:8px;padding:12px;margin-bottom:12px;color:#c00000;font-size:13px">${esc(r.error_message)}</div>` : ''}
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Date</th><th>Customer</th><th>Document</th>
+            <th>Excel Item</th><th>Description</th><th>Excel Qty</th>
+            <th>CRM Item</th><th>CRM Product</th>
+            <th>Inventory</th><th>Allocated</th><th>Status</th>
+          </tr></thead>
+          <tbody>
+            ${rows.map(row => `<tr>
+              <td>${esc(row.posting_date)}</td>
+              <td>${esc(row.customer_no)}</td>
+              <td>${esc(row.document_no)}</td>
+              <td><span class="pill">${esc(row.excel_item_no)}</span></td>
+              <td style="color:${row.inventory_status==='ZERO INVENTORY'||row.inventory_status==='INSUFFICIENT INVENTORY'?'#c00000':'inherit'}">${esc(row.excel_description)}</td>
+              <td>${esc(row.excel_qty)}</td>
+              <td><span class="pill">${esc(row.crm_item_no)}</span></td>
+              <td>${esc(row.crm_product)}</td>
+              <td>${esc(row.crm_inventory)}</td>
+              <td>${esc(row.allocated_qty)}</td>
+              <td><span class="pill pill-${row.inventory_status==='ENOUGH INVENTORY'?'success':row.inventory_status==='ZERO INVENTORY'?'error':'warn'}">${esc(row.inventory_status)}</span></td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`;
+  } catch (err) {
+    detailPanel.innerHTML = `<p style="color:#c00000">Failed to load run detail: ${err.message}</p>`;
+  }
+}
+
 </script>
 </body>
 </html>
