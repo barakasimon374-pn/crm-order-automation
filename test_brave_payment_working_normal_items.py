@@ -5,7 +5,6 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 import time
 import traceback
 import re
-from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -308,7 +307,8 @@ def load_excel_orders(excel_path):
 
     orders = {}
     source_rows = 0
-    ignored_rows = 0
+    non_k_rows = 0
+    unapproved_rows = 0
     skipped_rows = 0
 
     for excel_row in rows:
@@ -325,7 +325,7 @@ def load_excel_orders(excel_path):
         location_code = normalize_excel_value(row["Location Code"])
 
         if not location_code.upper().startswith("K-"):
-            ignored_rows += 1
+            non_k_rows += 1
             continue
 
         row_type = normalize_excel_value(row["Type"])
@@ -337,7 +337,7 @@ def load_excel_orders(excel_path):
         description = normalize_excel_value(row["Description"])
 
         if not is_approved_excel_description(description):
-            ignored_rows += 1
+            unapproved_rows += 1
             continue
 
         document_no = normalize_excel_value(row["Document No."])
@@ -439,8 +439,9 @@ def load_excel_orders(excel_path):
 
     print()
     print(f"Source rows read: {source_rows}")
-    print(f"FT/WT/Frencia rows ignored: {ignored_rows}")
-    print(f"Non-item rows skipped: {skipped_rows}")
+    print(f"Non K- location rows skipped: {non_k_rows}")
+    print(f"Non-approved description rows skipped: {unapproved_rows}")
+    print(f"Non-item type rows skipped: {skipped_rows}")
     print(f"Usable order rows: {sum(len(order['lines']) for order in orders.values())}")
     print(f"Unique Document Nos.: {len(orders)}")
     print()
@@ -448,115 +449,6 @@ def load_excel_orders(excel_path):
 
     return orders
 
-
-def audit_excel_pricing_codes(excel_path):
-    print()
-    print("=" * 80)
-    print("EXCEL PRICING CODE AUDIT")
-    print("=" * 80)
-
-    workbook = load_workbook(filename=excel_path, read_only=True, data_only=True)
-    worksheet = workbook.active
-    rows = worksheet.iter_rows(values_only=True)
-    header_row = next(rows)
-    headers = [normalize_excel_value(value) for value in header_row]
-    column_index = {header: index for index, header in enumerate(headers)}
-
-    pricing_patterns = ["24", "33", "44", "66", "36", "40", "45", "55", "61"]
-    results = {prefix: [] for prefix in pricing_patterns}
-
-    for excel_row in rows:
-        if not any(value not in (None, "") for value in excel_row):
-            continue
-
-        location_code = normalize_excel_value(
-            excel_row[column_index["Location Code"]]
-        )
-
-        if not location_code.upper().startswith("K-"):
-            continue
-
-        description = normalize_excel_value(excel_row[column_index["Description"]])
-        item_no = normalize_excel_value(excel_row[column_index["No."]])
-        upper_description = description.upper()
-
-        if not (
-            upper_description.startswith("FT ")
-            or upper_description.startswith("WT ")
-        ):
-            continue
-
-        if (
-            upper_description.startswith("FT GG")
-            or upper_description.startswith("FT GS")
-        ):
-            continue
-
-        matches = re.findall(r"(?<!\d)\d{5,6}(?!\d)", description)
-
-        for code in matches:
-            for prefix in pricing_patterns:
-                if code.startswith(prefix):
-                    results[prefix].append({
-                        "item_no": item_no,
-                        "description": description,
-                        "code": code,
-                    })
-                    break
-
-    workbook.close()
-
-    for prefix in pricing_patterns:
-        entries = results[prefix]
-
-        print()
-        print(f"PREFIX {prefix} -> RULE PRICE {PRICE_PREFIX_RULES[prefix]}")
-        print(f"Occurrences found: {len(entries)}")
-
-        for entry in entries[:10]:
-            print(f"  {entry['item_no']} | {entry['code']} | {entry['description']}")
-
-        if len(entries) > 10:
-            print(f"  ... and {len(entries) - 10} more.")
-
-    print()
-    print("=" * 80)
-    print("PRICING CODE AUDIT COMPLETED")
-    print("=" * 80)
-
-
-def preview_excel_orders(excel_path):
-    orders = load_excel_orders(excel_path)
-
-    print()
-    print("=" * 70)
-    print("EXCEL ORDER PREVIEW")
-    print("=" * 70)
-
-    preview_count = min(len(orders), 10)
-    order_items = list(orders.values())
-
-    for index in range(preview_count):
-        order = order_items[index]
-
-        print()
-        print(f"ORDER {index + 1}:")
-        print(f"Document No.: {order['document_no']}")
-        print(f"Customer No.: {order['customer_no']}")
-        print(f"Lines: {len(order['lines'])}")
-
-        for line in order["lines"]:
-            print(
-                f"  {line['item_no']} | {line['description']} | "
-                f"Qty={line['quantity']} | Excel Price={line['unit_price_excel']}"
-            )
-
-    if len(orders) > preview_count:
-        print()
-        print(f"... and {len(orders) - preview_count} more orders.")
-
-    print()
-    print("EXCEL PREVIEW COMPLETED.")
 
 
 # ============================================================
@@ -648,137 +540,15 @@ def find_order_row(page, product_title):
     raise Exception(f"Order line not found:\n{product_title}")
 
 
-def enter_quantity(page, product_title, quantity):
-    print()
-    print("=" * 60)
-    print("ENTERING QUANTITY")
-    print("=" * 60)
-    print(f"Product: {product_title}")
-    print(f"Quantity: {quantity}")
-
-    row = find_order_row(page, product_title)
-    quantity_input = row.locator('input[type="number"]').first
-
-    if quantity_input.count() == 0:
-        raise Exception(f"Quantity input not found for:\n{product_title}")
-
-    quantity_input.scroll_into_view_if_needed()
-    quantity_input.fill(str(quantity))
-    page.wait_for_timeout(300)
-
-    entered_quantity = quantity_input.input_value()
-    print(f"Quantity field now shows: '{entered_quantity}'")
-
-    if entered_quantity != str(quantity):
-        raise Exception(
-            f"Quantity was not entered correctly for:\n{product_title}\n"
-            f"Expected: {quantity}\nFound: {entered_quantity}"
-        )
-
-    print("QUANTITY ENTERED SUCCESSFULLY")
-
-
-def enter_unit_price(page, product_title, unit_price):
-    print()
-    print("=" * 60)
-    print("ENTERING UNIT PRICE")
-    print("=" * 60)
-    print(f"Product: {product_title}")
-    print(f"Unit price: {unit_price}")
-
-    row = find_order_row(page, product_title)
-    price_input = row.locator('input[placeholder="Please input unit price"]').first
-
-    if price_input.count() == 0:
-        raise Exception(f"Unit price input not found for:\n{product_title}")
-
-    price_input.scroll_into_view_if_needed()
-    price_input.fill(str(unit_price))
-    page.wait_for_timeout(300)
-
-    entered_price = price_input.input_value()
-    print(f"Unit price field now shows: '{entered_price}'")
-
-    if entered_price != str(unit_price):
-        raise Exception(
-            f"Unit price was not entered correctly for:\n{product_title}\n"
-            f"Expected: {unit_price}\nFound: {entered_price}"
-        )
-
-    print("UNIT PRICE ENTERED SUCCESSFULLY")
-
-
 # ============================================================
 # WAREHOUSE / INVENTORY
 # ============================================================
-
-def debug_visible_warehouse_dropdown(page):
-    """Print visible dropdown structure for debugging warehouse options."""
-    print()
-    print("========== WAREHOUSE DROPDOWN DEBUG ==========")
-
-    try:
-        dropdowns = page.locator(".el-select-dropdown:visible")
-        print(f"Visible Element Plus dropdowns: {dropdowns.count()}")
-
-        for i in range(dropdowns.count()):
-            dropdown = dropdowns.nth(i)
-            print()
-            print(f"--- Dropdown {i} ---")
-
-            try:
-                print("TEXT:")
-                print(dropdown.inner_text())
-            except Exception as e:
-                print(f"Could not read dropdown text: {e}")
-
-            try:
-                print()
-                print("HTML:")
-                html = dropdown.evaluate("(el) => el.outerHTML")
-                print(html[:12000])
-            except Exception as e:
-                print(f"Could not read dropdown HTML: {e}")
-
-    except Exception as e:
-        print(f"Could not inspect Element Plus dropdowns: {e}")
-
-    try:
-        suam_matches = page.get_by_text(WAREHOUSE_NAME, exact=False)
-        suam_visible = visible_count(suam_matches)
-
-        print()
-        print(f"Visible text matches containing '{WAREHOUSE_NAME}': {suam_visible}")
-
-        for i in range(suam_matches.count()):
-            candidate = suam_matches.nth(i)
-
-            try:
-                if candidate.is_visible():
-                    print()
-                    print(f"--- Visible SUAM match {i} ---")
-                    print("Tag:", candidate.evaluate("(el) => el.tagName"))
-                    print("Text:", candidate.inner_text())
-                    print("Class:", candidate.get_attribute("class"))
-                    print(
-                        "Outer HTML:",
-                        candidate.evaluate("(el) => el.outerHTML")[:5000],
-                    )
-            except Exception:
-                pass
-
-    except Exception as e:
-        print(f"Additional SUAM STORES inspection failed: {e}")
-
-    print()
-    print("========== END WAREHOUSE DEBUG ==========")
-
 
 def select_suam_stores(page, warehouse_select):
     """
     Select SUAM STORES from the warehouse dropdown.
 
-    read_inventory() has already opened the dropdown before calling this
+    read_inventory_for_order_line() opens the dropdown before calling this
     function, so this function must NOT click the warehouse selector again.
     """
     print()
@@ -900,90 +670,6 @@ def select_suam_stores(page, warehouse_select):
 
     raise Exception(f"Could not select {WAREHOUSE_NAME}.")
 
-
-def read_inventory(page, product_title):
-    print()
-    print("Processing warehouse for:")
-    print(product_title)
-
-    row = find_order_row(page, product_title)
-    cells = row.locator("td")
-    cell_count = cells.count()
-
-    print(f"Number of cells in row: {cell_count}")
-
-    if cell_count < 5:
-        raise Exception(
-            f"Unexpected order row structure for {product_title}. "
-            f"Only {cell_count} cells found."
-        )
-
-    # CRM table structure:
-    # 0=Item number  1=Product title  2=Unit  3=Warehouse  4=Dealer inventory
-    warehouse_cell = cells.nth(3)
-    warehouse_select = warehouse_cell.locator(".el-select").first
-
-    if warehouse_select.count() == 0:
-        raise Exception(f"Warehouse selector not found for:\n{product_title}")
-
-    try:
-        current_warehouse = warehouse_select.inner_text().strip()
-    except Exception:
-        current_warehouse = ""
-
-    print(f"Current warehouse: {current_warehouse}")
-
-    if WAREHOUSE_NAME.upper() not in current_warehouse.upper():
-        print()
-        print("OPENING WAREHOUSE DROPDOWN...")
-        warehouse_select.click(force=True)
-
-        selected = select_suam_stores(page, warehouse_select)
-
-        if not selected:
-            raise Exception(f"Could not select {WAREHOUSE_NAME}.")
-
-        print()
-        print("Warehouse selection completed.")
-    else:
-        print("Warehouse is already SUAM STORES.")
-
-    # Selecting the warehouse causes the CRM/Vue table to re-render.
-    # Wait until the product row is available again.
-    print()
-    print("Waiting for CRM table to finish re-rendering...")
-
-    page.wait_for_timeout(1500)
-
-    row = page.locator("tr").filter(has_text=product_title).first
-
-    try:
-        row.wait_for(state="visible", timeout=10000)
-    except Exception:
-        raise Exception(
-            f"Product row did not reappear after warehouse selection:\n{product_title}"
-        )
-
-    print("Product row is visible again.")
-
-    cells = row.locator("td")
-    cell_count = cells.count()
-
-    print(f"Refreshed row cell count: {cell_count}")
-
-    if cell_count < 5:
-        raise Exception(
-            f"Unexpected refreshed row structure for {product_title}. "
-            f"Only {cell_count} cells found."
-        )
-
-    inventory_cell = cells.nth(4)
-    page.wait_for_timeout(500)
-
-    inventory_text = inventory_cell.inner_text().strip()
-    print(f"Dealer warehouse inventory: '{inventory_text}'")
-
-    return inventory_text
 
 
 # ============================================================
@@ -2457,17 +2143,6 @@ def test_submit_order(page):
 # EXCEL -> CRM ORDER PROCESSING HELPERS
 # ============================================================
 
-PRICE_PREFIX_RULES = {
-    "24": 1200,
-    "33": 1300,
-    "44": 1550,
-    "66": 2000,
-    "36": 2200,
-    "40": 2200,
-    "45": 2200,
-    "55": 2200,
-    "61": 2200,
-}
 
 
 def get_crm_search_text(line):
@@ -2648,8 +2323,8 @@ def get_crm_price(line, order_lines=None):
             return excel_price / 2
 
     # Standard digit-prefix pricing.
-    pricing_code = item_no
-
+    # For FT/WT items whose embedded code starts with a known prefix,
+    # use the Excel Amount column value directly instead of a fixed price.
     if "FT " in description or "WT " in description:
         embedded_code = re.search(
             r"(?<!\d)(?:24|33|44|66|61|40|55|36|45)\d{3,4}(?!\d)",
@@ -2657,11 +2332,8 @@ def get_crm_price(line, order_lines=None):
         )
 
         if embedded_code:
-            pricing_code = embedded_code.group(0)
-
-    for prefix, price in PRICE_PREFIX_RULES.items():
-        if pricing_code.startswith(prefix):
-            return price
+            # Use the Unit Price Incl. VAT value for these tile codes.
+            return unit_price_excel
 
     return excel_price
 
