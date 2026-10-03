@@ -2221,11 +2221,29 @@ def get_crm_search_text(line):
     # FT TILES
     # Skip the first 5 characters, then take the first 5 digits.
     # e.g. "FT FGE24101J WH ..." -> skip "FT FG" -> "24101"
+    #
+    # EXCEPTION — MRP / MR items:
+    # Item codes starting with MRP or MR use the 6 digits
+    # immediately after the MRP/MR prefix in the item number.
+    # e.g. item "MRP612002Y" -> "612002"
+    #      item "MR612009Y"  -> "612009"
     # --------------------------------------------------------
 
     if description_upper.startswith("FT "):
-        digits = re.search(r"\d{5}", description[5:])
+        # MRP prefix — 6 digits after "MRP"
+        if item_no.startswith("MRP"):
+            mrp_digits = re.search(r"\d{6}", item_no[3:])
+            if mrp_digits:
+                return mrp_digits.group(0)
 
+        # MR prefix (no P) — 6 digits after "MR"
+        if item_no.startswith("MR"):
+            mr_digits = re.search(r"\d{6}", item_no[2:])
+            if mr_digits:
+                return mr_digits.group(0)
+
+        # Standard rule: skip first 5 chars, take first 5 digits.
+        digits = re.search(r"\d{5}", description[5:])
         if digits:
             return digits.group(0)
 
