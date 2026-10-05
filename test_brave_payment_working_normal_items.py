@@ -2187,11 +2187,11 @@ def get_crm_search_text(line):
 
     # --------------------------------------------------------
     # ITEM NUMBER ALIASES
-    # Map Excel item numbers that differ from the CRM code.
+    # Map Excel item numbers/descriptions that differ from the CRM code.
     # --------------------------------------------------------
 
-    # KF-0041 in Excel -> KF-004 in CRM
-    if item_no == "KF-0041":
+    # KF-0041 in Excel description -> KF-004 in CRM
+    if "KF-0041" in description_upper:
         return "KF-004"
 
     # --------------------------------------------------------
