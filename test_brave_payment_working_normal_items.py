@@ -789,7 +789,10 @@ def search_product(page, search_text):
                 print(
                     "Search input disappeared — product dialog may have closed."
                 )
-                break
+                raise Exception(
+                    f"Product search dialog closed unexpectedly while "
+                    f"waiting for results for '{search_text}'."
+                )
 
             current_rows = page.locator("tr:visible")
             current_texts = current_rows.all_inner_texts()
@@ -2888,7 +2891,7 @@ def main():
 
                         if _search_attempt < 2:
                             print("Retrying after a short wait...")
-                            order_page.wait_for_timeout(2000)
+                            order_page.wait_for_timeout(3000)
                         else:
                             raise
 
