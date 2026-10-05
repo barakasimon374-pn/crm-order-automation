@@ -66,10 +66,6 @@ POSTING_REPORT_ROWS = []
 ZERO_INVENTORY_REPORT_LINES = []
 INVENTORY_RESERVATIONS = {}
 
-# Normal zero-inventory CRM lines are kept temporarily and
-# deleted after the next Excel item creates its CRM line.
-PENDING_ZERO_INVENTORY_DELETIONS = []
-
 
 def write_posting_report():
     if not POSTING_REPORT_ROWS:
@@ -1645,25 +1641,31 @@ def allocate_quantity_across_new_lines(page, new_lines, required_quantity, unit_
     # --------------------------------------------------------
 
     if zero_lines:
+        # Delete zero-inventory lines immediately, highest occurrence first
+        # so duplicate product identities don't shift before deletion.
+        zero_lines.sort(
+            key=lambda line: (line["key"], line["occurrence"]), reverse=True
+        )
+
         print()
-        print("QUEUING ZERO-INVENTORY CRM LINES FOR NEXT-ITEM DELETION")
+        print("DELETING ZERO-INVENTORY CRM LINES IMMEDIATELY")
 
         for line in zero_lines:
-            PENDING_ZERO_INVENTORY_DELETIONS.append({
-                "item_no": str(line["item_no"]).strip(),
-                "product_title": str(line["product_title"]).strip(),
-                "occurrence": int(line["occurrence"]),
-            })
-
             print(
-                f"Queued zero-inventory line: "
+                f"Deleting zero-inventory line: "
                 f"{line['item_no']} | {line['product_title']} | "
                 f"Occurrence={line['occurrence']}"
             )
 
+            delete_order_line_occurrence(
+                page,
+                line["item_no"],
+                line["product_title"],
+                line["occurrence"],
+            )
+
     # --------------------------------------------------------
     # DELETE UNUSED POSITIVE-INVENTORY LINES IMMEDIATELY.
-    # Zero-inventory lines are deliberately NOT deleted here.
     # --------------------------------------------------------
 
     if excess_lines:
@@ -2844,116 +2846,8 @@ def main():
                     )
 
                 # ------------------------------------------------
-                # DELETE PENDING ZERO-INVENTORY LINES NOW THAT THE
-                # NEXT NORMAL CRM ITEM HAS BEEN ADDED
-                # ------------------------------------------------
-
-                if PENDING_ZERO_INVENTORY_DELETIONS:
-                    pending_zero_deletions = PENDING_ZERO_INVENTORY_DELETIONS.copy()
-                    PENDING_ZERO_INVENTORY_DELETIONS.clear()
-
-                    # Build a set of (item_no, product_title) keys for the
-                    # lines just added for the current Excel item.
-                    # Any pending deletion whose key matches a newly added line
-                    # must be skipped — it would delete the fresh line we just
-                    # added, not a leftover from the previous item.
-                    new_line_keys = {
-                        (
-                            str(nl["item_no"]).strip().upper(),
-                            str(nl["product_title"]).strip().upper(),
-                        )
-                        for nl in new_order_lines
-                    }
-
-                    # Highest occurrence first prevents duplicate product
-                    # identities from shifting before deletion.
-                    pending_zero_deletions.sort(
-                        key=lambda d: (
-                            str(d.get("item_no", "")),
-                            str(d.get("product_title", "")),
-                            int(d.get("occurrence", 0)),
-                        ),
-                        reverse=True,
-                    )
-
-                    for pending_line in pending_zero_deletions:
-                        pending_item = str(pending_line.get("item_no", "")).strip()
-                        pending_product = str(
-                            pending_line.get("product_title", "")
-                        ).strip()
-                        pending_occurrence = int(pending_line.get("occurrence", 0))
-
-                        pending_key = (
-                            pending_item.upper(),
-                            pending_product.upper(),
-                        )
-
-                        # Skip if this product was just added as a new line
-                        # for the current Excel item.
-                        if pending_key in new_line_keys:
-                            print()
-                            print(
-                                f"SKIPPING pending deletion — product was "
-                                f"re-added for the current item:\n"
-                                f"{pending_item} | {pending_product}"
-                            )
-                            continue
-
-                        print()
-                        print("=" * 70)
-                        print(
-                            "DELETING PENDING ZERO-INVENTORY LINE "
-                            "AFTER NEXT ITEM WAS ADDED"
-                        )
-                        print("=" * 70)
-                        print(f"Item: {pending_item}")
-                        print(f"Product: {pending_product}")
-                        print(f"Original occurrence: {pending_occurrence}")
-
-                        deleted = delete_order_line_occurrence(
-                            order_page,
-                            pending_item,
-                            pending_product,
-                            pending_occurrence,
-                        )
-
-                        if not deleted:
-                            print()
-                            print(
-                                f"WARNING: Pending zero-inventory CRM line "
-                                f"could not be deleted — skipping and continuing.\n"
-                                f"{pending_item} | {pending_product} | "
-                                f"Occurrence={pending_occurrence}"
-                            )
-                            print(
-                                "The safety-net cleanup at the end of the "
-                                "run will handle any remaining zero-inventory lines."
-                            )
-                        else:
-                            print()
-                            print(
-                                f"Pending zero-inventory line deleted successfully: "
-                                f"{pending_item} | {pending_product}"
-                            )
-
-                # ------------------------------------------------
                 # ALLOCATE BC QUANTITY ACROSS CRM LINES
                 # ------------------------------------------------
-
-                # Re-snapshot order lines after any pending deletions.
-                # Pending deletions can remove earlier occurrences of the
-                # same product, shifting occurrence numbers of newly added
-                # lines. A fresh snapshot ensures correct occurrence indices
-                # are passed to allocate_quantity_across_new_lines.
-                after_order_lines = get_order_line_records(order_page)
-                new_order_lines = get_new_order_lines(
-                    before_order_lines, after_order_lines
-                )
-                print()
-                print(
-                    f"New CRM order lines (after pending deletions): "
-                    f"{len(new_order_lines)}"
-                )
 
                 current_order_lines = excel_orders[document_no]["lines"]
 
