@@ -2162,6 +2162,15 @@ def get_crm_search_text(line):
     description_upper = description.upper()
 
     # --------------------------------------------------------
+    # ITEM NUMBER ALIASES
+    # Map Excel item numbers that differ from the CRM code.
+    # --------------------------------------------------------
+
+    # KF-0041 in Excel -> KF-004 in CRM
+    if item_no == "KF-0041":
+        return "KF-004"
+
+    # --------------------------------------------------------
     # FRENCIA BASIN FAUCETS (BF-)
     # BF-22S in Excel -> BF-225 in CRM
     # --------------------------------------------------------
