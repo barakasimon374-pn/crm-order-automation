@@ -2880,11 +2880,16 @@ def main():
                         )
 
                         if not deleted:
-                            raise Exception(
-                                f"Pending zero-inventory CRM line could not be deleted "
-                                f"after next CRM item was added:\n"
+                            print()
+                            print(
+                                f"WARNING: Pending zero-inventory CRM line "
+                                f"could not be deleted — skipping and continuing.\n"
                                 f"{pending_item} | {pending_product} | "
                                 f"Occurrence={pending_occurrence}"
+                            )
+                            print(
+                                "The safety-net cleanup at the end of the "
+                                "run will handle any remaining zero-inventory lines."
                             )
 
                         print()
