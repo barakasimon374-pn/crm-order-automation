@@ -783,12 +783,30 @@ def search_product(page, search_text):
 
     for attempt in range(30):
         try:
+            # The search input must still be visible — if it disappeared
+            # we are no longer inside the product search dialog.
+            if not search_input.is_visible():
+                print(
+                    "Search input disappeared — product dialog may have closed."
+                )
+                break
+
             current_rows = page.locator("tr:visible")
             current_texts = current_rows.all_inner_texts()
             current_signature = "\n".join(
                 " ".join(text.split()) for text in current_texts
             )
 
+            # Count checkboxes that are inside the search dialog specifically.
+            # We use the dialog container to avoid counting order-table checkboxes.
+            dialog_checkboxes = page.locator(
+                'input[placeholder="Please input The title of the product"]'
+                ' >> xpath=ancestor::div[contains(@class,"el-dialog") '
+                'or contains(@class,"dialog") or contains(@class,"modal")]'
+                ' >> .el-checkbox__inner'
+            )
+
+            # Fallback: count all visible checkboxes
             visible_result_checkboxes = page.locator("tr:visible .el-checkbox__inner")
             checkbox_count = visible_count(visible_result_checkboxes)
 
@@ -822,6 +840,10 @@ def search_product(page, search_text):
             f"CRM search results did not finish refreshing "
             f"for '{search_text}' within 15 seconds."
         )
+
+    # Extra stabilisation wait — give the CRM a moment to fully render
+    # the search result rows before select_all_product_results reads them.
+    page.wait_for_timeout(800)
 
     print(f"Search completed for: {search_text}")
 
@@ -2812,12 +2834,34 @@ def main():
                     f"Existing CRM order lines before search: {len(before_order_lines)}"
                 )
 
-                open_product_window(order_page)
-                search_product(order_page, search_text)
+                # Retry the open/search/select cycle up to 3 times.
+                # The CRM occasionally stabilises on the wrong table
+                # (order rows instead of search results), causing
+                # select_all_product_results to find 0 selectable rows.
+                # Re-opening the product window and re-searching fixes it.
+                selected_products = None
+                for _search_attempt in range(3):
+                    open_product_window(order_page)
+                    search_product(order_page, search_text)
 
-                selected_products = select_all_product_results(
-                    order_page, search_text
-                )
+                    try:
+                        selected_products = select_all_product_results(
+                            order_page, search_text
+                        )
+                        break  # success
+
+                    except Exception as search_err:
+                        print()
+                        print(
+                            f"Search attempt {_search_attempt + 1} found no "
+                            f"selectable results: {search_err}"
+                        )
+
+                        if _search_attempt < 2:
+                            print("Retrying after a short wait...")
+                            order_page.wait_for_timeout(2000)
+                        else:
+                            raise
 
                 print()
                 print(f"Selected CRM search results: {len(selected_products)}")
