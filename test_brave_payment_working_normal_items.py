@@ -2902,6 +2902,21 @@ def main():
                 # ALLOCATE BC QUANTITY ACROSS CRM LINES
                 # ------------------------------------------------
 
+                # Re-snapshot order lines after any pending deletions.
+                # Pending deletions can remove earlier occurrences of the
+                # same product, shifting occurrence numbers of newly added
+                # lines. A fresh snapshot ensures correct occurrence indices
+                # are passed to allocate_quantity_across_new_lines.
+                after_order_lines = get_order_line_records(order_page)
+                new_order_lines = get_new_order_lines(
+                    before_order_lines, after_order_lines
+                )
+                print()
+                print(
+                    f"New CRM order lines (after pending deletions): "
+                    f"{len(new_order_lines)}"
+                )
+
                 current_order_lines = excel_orders[document_no]["lines"]
 
                 zero_report_start = len(ZERO_INVENTORY_REPORT_LINES)
