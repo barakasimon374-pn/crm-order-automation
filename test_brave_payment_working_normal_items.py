@@ -2843,6 +2843,19 @@ def main():
                     pending_zero_deletions = PENDING_ZERO_INVENTORY_DELETIONS.copy()
                     PENDING_ZERO_INVENTORY_DELETIONS.clear()
 
+                    # Build a set of (item_no, product_title) keys for the
+                    # lines just added for the current Excel item.
+                    # Any pending deletion whose key matches a newly added line
+                    # must be skipped — it would delete the fresh line we just
+                    # added, not a leftover from the previous item.
+                    new_line_keys = {
+                        (
+                            str(nl["item_no"]).strip().upper(),
+                            str(nl["product_title"]).strip().upper(),
+                        )
+                        for nl in new_order_lines
+                    }
+
                     # Highest occurrence first prevents duplicate product
                     # identities from shifting before deletion.
                     pending_zero_deletions.sort(
@@ -2860,6 +2873,22 @@ def main():
                             pending_line.get("product_title", "")
                         ).strip()
                         pending_occurrence = int(pending_line.get("occurrence", 0))
+
+                        pending_key = (
+                            pending_item.upper(),
+                            pending_product.upper(),
+                        )
+
+                        # Skip if this product was just added as a new line
+                        # for the current Excel item.
+                        if pending_key in new_line_keys:
+                            print()
+                            print(
+                                f"SKIPPING pending deletion — product was "
+                                f"re-added for the current item:\n"
+                                f"{pending_item} | {pending_product}"
+                            )
+                            continue
 
                         print()
                         print("=" * 70)
@@ -2891,12 +2920,12 @@ def main():
                                 "The safety-net cleanup at the end of the "
                                 "run will handle any remaining zero-inventory lines."
                             )
-
-                        print()
-                        print(
-                            f"Pending zero-inventory line deleted successfully: "
-                            f"{pending_item} | {pending_product}"
-                        )
+                        else:
+                            print()
+                            print(
+                                f"Pending zero-inventory line deleted successfully: "
+                                f"{pending_item} | {pending_product}"
+                            )
 
                 # ------------------------------------------------
                 # ALLOCATE BC QUANTITY ACROSS CRM LINES
@@ -3048,30 +3077,44 @@ def main():
                         open_product_window(order_page)
                         search_product(order_page, "SC-001")
 
-                        selected_sc_products = select_all_product_results(
-                            order_page, "SC-001"
-                        )
-
-                        print(
-                            f"Selected SC-001 CRM results: {len(selected_sc_products)}"
-                        )
-
-                        order_page = confirm_product_selection(order_page)
-                        order_page.wait_for_timeout(1000)
-
-                        after_sc_lines = get_order_line_records(order_page)
-
-                        sc_new_lines = get_new_order_lines(
-                            before_sc_lines, after_sc_lines
-                        )
-
-                        print(f"New SC-001 CRM lines created: {len(sc_new_lines)}")
-
-                        if not sc_new_lines:
-                            raise Exception(
-                                "SC-001 selection was confirmed, but no new "
-                                "SC-001 CRM line was detected."
+                        try:
+                            selected_sc_products = select_all_product_results(
+                                order_page, "SC-001"
                             )
+
+                            print(
+                                f"Selected SC-001 CRM results: {len(selected_sc_products)}"
+                            )
+
+                            order_page = confirm_product_selection(order_page)
+                            order_page.wait_for_timeout(1000)
+
+                            after_sc_lines = get_order_line_records(order_page)
+
+                            sc_new_lines = get_new_order_lines(
+                                before_sc_lines, after_sc_lines
+                            )
+
+                            print(f"New SC-001 CRM lines created: {len(sc_new_lines)}")
+
+                            if not sc_new_lines:
+                                print(
+                                    "WARNING: SC-001 confirmed but no new line "
+                                    "detected — skipping SC-001 companion."
+                                )
+                                sc_new_lines = []
+
+                        except Exception as sc_error:
+                            print()
+                            print(
+                                f"WARNING: SC-001 companion could not be added: "
+                                f"{sc_error}"
+                            )
+                            print(
+                                "Continuing without SC-001 — P and T components "
+                                "will still be allocated."
+                            )
+                            sc_new_lines = []
 
                     # Calculate paired component price.
                     unit_price_excel = float(line["unit_price_excel"])
@@ -3115,7 +3158,7 @@ def main():
                     )
                     retained_lines.extend(retained_t_lines)
 
-                    if paired_model in paired_models_with_sc:
+                    if paired_model in paired_models_with_sc and sc_new_lines:
                         retained_sc_lines = allocate_quantity_across_new_lines(
                             order_page, sc_new_lines, quantity, 1000
                         )
