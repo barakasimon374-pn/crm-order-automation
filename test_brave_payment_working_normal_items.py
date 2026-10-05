@@ -1975,31 +1975,60 @@ def test_submit_order(page):
     print("TESTING GO COLLECT MONEY")
     print("=" * 60)
 
-    print("Waiting for Go Collect Money screen...")
-    page.wait_for_timeout(2000)
+    print("Waiting for Go Collect Money button (up to 20 seconds)...")
 
-    print("Looking for Go Collect Money button...")
+    go_collect_button = None
 
-    go_collect_buttons = page.locator('button:has-text("Go collect money")')
-    visible_go_collect_buttons = []
-
-    go_collect_count = go_collect_buttons.count()
-    print(f"Go Collect Money button elements found: {go_collect_count}")
-
-    for i in range(go_collect_count):
+    for attempt in range(40):
         try:
-            button = go_collect_buttons.nth(i)
-            if button.is_visible():
-                visible_go_collect_buttons.append(button)
+            # The CRM may use slightly different casing or wording.
+            candidates = page.locator(
+                'button:has-text("Go collect money"), '
+                'button:has-text("Go Collect Money"), '
+                'button:has-text("collect money")'
+            )
+
+            count = candidates.count()
+
+            for i in range(count):
+                btn = candidates.nth(i)
+                try:
+                    if btn.is_visible():
+                        go_collect_button = btn
+                        break
+                except Exception:
+                    pass
+
+            if go_collect_button is not None:
+                print(
+                    f"Go Collect Money button found after "
+                    f"{(attempt + 1) * 500}ms."
+                )
+                break
+
         except Exception:
-            continue
+            pass
 
-    print(f"Visible Go Collect Money buttons found: {len(visible_go_collect_buttons)}")
+        page.wait_for_timeout(500)
 
-    if len(visible_go_collect_buttons) == 0:
+    if go_collect_button is None:
+        # Print whatever is on the page to help diagnose.
+        print()
+        print("Visible buttons on page after submit:")
+        try:
+            visible_buttons = page.locator("button:visible")
+            for i in range(visible_buttons.count()):
+                try:
+                    text = visible_buttons.nth(i).inner_text().strip()
+                    if text:
+                        print(f"  BUTTON: '{text}'")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         raise Exception("Visible Go Collect Money button was not found.")
 
-    go_collect_button = visible_go_collect_buttons[0]
     print(f"Go Collect Money button text: '{go_collect_button.inner_text().strip()}'")
 
     go_collect_button.scroll_into_view_if_needed()
