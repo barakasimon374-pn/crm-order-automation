@@ -3156,6 +3156,7 @@ def main():
 
                 # ------------------------------------------------
                 # COLLECT POSTING REPORT ROWS
+                # One row per Excel line — always matches the preview count.
                 # ------------------------------------------------
 
                 customer_no = str(
@@ -3163,41 +3164,52 @@ def main():
                 ).strip()
 
                 if retained_lines:
-                    # Lines were allocated — report only the retained lines.
-                    # Zero-inventory lines were already deleted from CRM and
-                    # are not included in the report.
-                    for retained_line in retained_lines:
-                        allocated = float(retained_line["allocated_quantity"])
-                        status = (
-                            "INSUFFICIENT INVENTORY"
-                            if allocated < float(quantity)
-                            else "ENOUGH INVENTORY"
-                        )
-                        POSTING_REPORT_ROWS.append({
-                            "posting_date": time.strftime("%Y-%m-%d"),
-                            "customer_no": customer_no,
-                            "document_no": document_no,
-                            "excel_item_no": item_no,
-                            "excel_description": description,
-                            "excel_qty": float(quantity),
-                            "excel_unit_price": float(line["unit_price_excel"]),
-                            "crm_item_no": str(retained_line["item_no"]).strip(),
-                            "crm_product": str(retained_line["product_title"]).strip(),
-                            "crm_inventory": float(retained_line["inventory"]),
-                            "allocated_qty": allocated,
-                            "crm_unit_price": float(retained_line["unit_price"]),
-                            "inventory_status": status,
-                        })
+                    # Collapse all CRM lines for this Excel item into one row.
+                    total_allocated = sum(
+                        float(r["allocated_quantity"]) for r in retained_lines
+                    )
+                    total_inventory = sum(
+                        float(r["inventory"]) for r in retained_lines
+                    )
+                    crm_item_nos = " | ".join(
+                        str(r["item_no"]).strip() for r in retained_lines
+                    )
+                    crm_products = " | ".join(
+                        str(r["product_title"]).strip() for r in retained_lines
+                    )
+                    # Use the first line's unit price as representative.
+                    crm_unit_price = float(retained_lines[0]["unit_price"])
+
+                    status = (
+                        "INSUFFICIENT INVENTORY"
+                        if total_allocated < float(quantity)
+                        else "ENOUGH INVENTORY"
+                    )
+
+                    POSTING_REPORT_ROWS.append({
+                        "posting_date": time.strftime("%Y-%m-%d"),
+                        "customer_no": customer_no,
+                        "document_no": document_no,
+                        "excel_item_no": item_no,
+                        "excel_description": description,
+                        "excel_qty": float(quantity),
+                        "excel_unit_price": float(line["unit_price_excel"]),
+                        "crm_item_no": crm_item_nos,
+                        "crm_product": crm_products,
+                        "crm_inventory": total_inventory,
+                        "allocated_qty": total_allocated,
+                        "crm_unit_price": crm_unit_price,
+                        "inventory_status": status,
+                    })
+
                 else:
-                    # No inventory was available for this Excel item at all.
-                    # Report one single ZERO INVENTORY row so the item appears
-                    # in the report and can be followed up.
+                    # No inventory was available — one ZERO INVENTORY row
+                    # so the item still appears in the report for follow-up.
                     zero_lines_for_item = ZERO_INVENTORY_REPORT_LINES[
                         zero_report_start:
                     ]
 
                     if zero_lines_for_item:
-                        # Use the first zero line as the representative row.
                         z = zero_lines_for_item[0]
                         POSTING_REPORT_ROWS.append({
                             "posting_date": time.strftime("%Y-%m-%d"),
@@ -3215,8 +3227,7 @@ def main():
                             "inventory_status": "ZERO INVENTORY",
                         })
                     else:
-                        # No CRM lines were created at all for this item
-                        # (e.g. search returned nothing). Still record it.
+                        # No CRM lines found at all — still record the item.
                         POSTING_REPORT_ROWS.append({
                             "posting_date": time.strftime("%Y-%m-%d"),
                             "customer_no": customer_no,
