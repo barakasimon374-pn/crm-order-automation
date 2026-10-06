@@ -3162,48 +3162,76 @@ def main():
                     excel_orders[document_no].get("customer_no", "")
                 ).strip()
 
-                for retained_line in retained_lines:
-                    POSTING_REPORT_ROWS.append({
-                        "posting_date": time.strftime("%Y-%m-%d"),
-                        "customer_no": customer_no,
-                        "document_no": document_no,
-                        "excel_item_no": item_no,
-                        "excel_description": description,
-                        "excel_qty": float(quantity),
-                        "excel_unit_price": float(line["unit_price_excel"]),
-                        "crm_item_no": str(retained_line["item_no"]).strip(),
-                        "crm_product": str(retained_line["product_title"]).strip(),
-                        "crm_inventory": float(retained_line["inventory"]),
-                        "allocated_qty": float(retained_line["allocated_quantity"]),
-                        "crm_unit_price": float(retained_line["unit_price"]),
-                        "inventory_status": (
-                            "ZERO INVENTORY"
-                            if float(retained_line["inventory"]) <= 0
-                            else (
-                                "INSUFFICIENT INVENTORY"
-                                if float(retained_line["allocated_quantity"])
-                                < float(quantity)
-                                else "ENOUGH INVENTORY"
-                            )
-                        ),
-                    })
+                if retained_lines:
+                    # Lines were allocated — report only the retained lines.
+                    # Zero-inventory lines were already deleted from CRM and
+                    # are not included in the report.
+                    for retained_line in retained_lines:
+                        allocated = float(retained_line["allocated_quantity"])
+                        status = (
+                            "INSUFFICIENT INVENTORY"
+                            if allocated < float(quantity)
+                            else "ENOUGH INVENTORY"
+                        )
+                        POSTING_REPORT_ROWS.append({
+                            "posting_date": time.strftime("%Y-%m-%d"),
+                            "customer_no": customer_no,
+                            "document_no": document_no,
+                            "excel_item_no": item_no,
+                            "excel_description": description,
+                            "excel_qty": float(quantity),
+                            "excel_unit_price": float(line["unit_price_excel"]),
+                            "crm_item_no": str(retained_line["item_no"]).strip(),
+                            "crm_product": str(retained_line["product_title"]).strip(),
+                            "crm_inventory": float(retained_line["inventory"]),
+                            "allocated_qty": allocated,
+                            "crm_unit_price": float(retained_line["unit_price"]),
+                            "inventory_status": status,
+                        })
+                else:
+                    # No inventory was available for this Excel item at all.
+                    # Report one single ZERO INVENTORY row so the item appears
+                    # in the report and can be followed up.
+                    zero_lines_for_item = ZERO_INVENTORY_REPORT_LINES[
+                        zero_report_start:
+                    ]
 
-                for zero_line in ZERO_INVENTORY_REPORT_LINES[zero_report_start:]:
-                    POSTING_REPORT_ROWS.append({
-                        "posting_date": time.strftime("%Y-%m-%d"),
-                        "customer_no": customer_no,
-                        "document_no": document_no,
-                        "excel_item_no": item_no,
-                        "excel_description": description,
-                        "excel_qty": float(quantity),
-                        "excel_unit_price": float(line["unit_price_excel"]),
-                        "crm_item_no": str(zero_line["item_no"]).strip(),
-                        "crm_product": str(zero_line["product_title"]).strip(),
-                        "crm_inventory": float(zero_line["inventory"]),
-                        "allocated_qty": 0.0,
-                        "crm_unit_price": float(zero_line["unit_price"]),
-                        "inventory_status": "ZERO INVENTORY",
-                    })
+                    if zero_lines_for_item:
+                        # Use the first zero line as the representative row.
+                        z = zero_lines_for_item[0]
+                        POSTING_REPORT_ROWS.append({
+                            "posting_date": time.strftime("%Y-%m-%d"),
+                            "customer_no": customer_no,
+                            "document_no": document_no,
+                            "excel_item_no": item_no,
+                            "excel_description": description,
+                            "excel_qty": float(quantity),
+                            "excel_unit_price": float(line["unit_price_excel"]),
+                            "crm_item_no": str(z["item_no"]).strip(),
+                            "crm_product": str(z["product_title"]).strip(),
+                            "crm_inventory": 0.0,
+                            "allocated_qty": 0.0,
+                            "crm_unit_price": float(z["unit_price"]),
+                            "inventory_status": "ZERO INVENTORY",
+                        })
+                    else:
+                        # No CRM lines were created at all for this item
+                        # (e.g. search returned nothing). Still record it.
+                        POSTING_REPORT_ROWS.append({
+                            "posting_date": time.strftime("%Y-%m-%d"),
+                            "customer_no": customer_no,
+                            "document_no": document_no,
+                            "excel_item_no": item_no,
+                            "excel_description": description,
+                            "excel_qty": float(quantity),
+                            "excel_unit_price": float(line["unit_price_excel"]),
+                            "crm_item_no": "",
+                            "crm_product": "",
+                            "crm_inventory": 0.0,
+                            "allocated_qty": 0.0,
+                            "crm_unit_price": 0.0,
+                            "inventory_status": "ZERO INVENTORY",
+                        })
 
                 print()
                 print(f"Retained CRM lines for BC item: {len(retained_lines)}")
