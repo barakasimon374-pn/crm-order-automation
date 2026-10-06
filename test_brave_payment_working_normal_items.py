@@ -225,6 +225,9 @@ def is_approved_excel_description(description):
     if upper_text.startswith("FRENCIA"):
         return True
 
+    if upper_text.startswith("BCP"):
+        return True
+
     if upper_text.startswith("WT "):
         return True
 
@@ -2225,6 +2228,19 @@ def get_crm_search_text(line):
     # KF-0041 in Excel description -> KF-004 in CRM
     if "KF-0041" in description_upper:
         return "KF-004"
+
+    # --------------------------------------------------------
+    # BCP BATHROOM ITEMS
+    # The first word of the description is the CRM product code.
+    # e.g. "BCP-6947 Bathroom cabinet 800X500X450" -> "BCP-6947"
+    #      "BCP-9071B-600 Bathroom cabinet"         -> "BCP-9071B-600"
+    #      "BCP003/033J-40 BATHROOM MIRROR KE-B1"   -> "BCP003/033J-40"
+    #      "BCP071C-60 BATHROOM CABINETS&Basin KE-B1"-> "BCP071C-60"
+    # --------------------------------------------------------
+
+    if description_upper.startswith("BCP"):
+        bcp_code = description.split()[0]
+        return bcp_code
 
     # --------------------------------------------------------
     # FRENCIA BASIN FAUCETS (BF-)
